@@ -4,10 +4,12 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 
 #define PORT 9410
 #define BUFFER_SIZE 1024
 
+// Receive one complete text line
 int recv_line(int sock, char *buffer, int size)
 {
     int index = 0;
@@ -35,6 +37,155 @@ int recv_line(int sock, char *buffer, int size)
     return index;
 }
 
+// Send exactly all raw bytes
+int send_bytes(int sock,
+               const char *buffer,
+               int length)
+{
+    int total = 0;
+
+    while (total < length)
+    {
+        int sent =
+            send(sock,
+                 buffer + total,
+                 length - total,
+                 0);
+
+        if (sent <= 0)
+            return -1;
+
+        total += sent;
+    }
+
+    return 0;
+}
+
+// Upload file using PUT protocol
+int upload_file(int sock,
+                const char *filename)
+{
+    struct stat file_info;
+    char header[512];
+    char buffer[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+
+    if (stat(filename, &file_info) < 0)
+    {
+        printf("Local file not found: %s\n",
+               filename);
+
+        return -1;
+    }
+
+    if (!S_ISREG(file_info.st_mode))
+    {
+        printf("The selected path is not a regular file.\n");
+
+        return -1;
+    }
+
+    FILE *fp =
+        fopen(filename, "rb");
+
+    if (fp == NULL)
+    {
+        perror("Unable to open local file");
+        return -1;
+    }
+
+    long long filesize =
+        (long long)file_info.st_size;
+
+    // Only send the base filename to Agent
+    const char *base_name =
+        strrchr(filename, '/');
+
+    if (base_name != NULL)
+        base_name++;
+    else
+        base_name = filename;
+
+    snprintf(header,
+             sizeof(header),
+             "PUT %s %lld\n",
+             base_name,
+             filesize);
+
+    printf("Sending protocol: PUT %s %lld\n",
+           base_name,
+           filesize);
+
+    if (send_bytes(sock,
+                   header,
+                   strlen(header)) < 0)
+    {
+        printf("Failed to send PUT header.\n");
+
+        fclose(fp);
+        return -1;
+    }
+
+    long long total_sent = 0;
+
+    while (total_sent < filesize)
+    {
+        size_t bytes_read =
+            fread(buffer,
+                  1,
+                  sizeof(buffer),
+                  fp);
+
+        if (bytes_read == 0)
+        {
+            if (ferror(fp))
+            {
+                printf("Error reading local file.\n");
+
+                fclose(fp);
+                return -1;
+            }
+
+            break;
+        }
+
+        if (send_bytes(sock,
+                       buffer,
+                       bytes_read) < 0)
+        {
+            printf("File transmission failed.\n");
+
+            fclose(fp);
+            return -1;
+        }
+
+        total_sent += bytes_read;
+    }
+
+    fclose(fp);
+
+    printf("Uploaded %lld raw bytes.\n",
+           total_sent);
+
+    int result =
+        recv_line(sock,
+                  response,
+                  sizeof(response));
+
+    if (result <= 0)
+    {
+        printf("No PUT response received from Agent.\n");
+
+        return -1;
+    }
+
+    printf("Agent response: %s\n",
+           response);
+
+    return 0;
+}
+
+// MAIN
 int main(int argc, char *argv[])
 {
     int sock;
@@ -46,11 +197,16 @@ int main(int argc, char *argv[])
 
     if (argc != 2)
     {
-        printf("Usage: %s <Agent_IP>\n", argv[0]);
+        printf("Usage: %s <Agent_IP>\n",
+               argv[0]);
+
         return 1;
     }
 
-    sock = socket(AF_INET, SOCK_STREAM, 0);
+    sock =
+        socket(AF_INET,
+               SOCK_STREAM,
+               0);
 
     if (sock < 0)
     {
@@ -58,21 +214,29 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    memset(&server_addr, 0, sizeof(server_addr));
+    memset(&server_addr,
+           0,
+           sizeof(server_addr));
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
+    server_addr.sin_family =
+        AF_INET;
+
+    server_addr.sin_port =
+        htons(PORT);
 
     if (inet_pton(AF_INET,
                   argv[1],
                   &server_addr.sin_addr) <= 0)
     {
         printf("Invalid Agent IP address\n");
+
         close(sock);
+
         return 1;
     }
 
     printf("RemoteOps Controller starting...\n");
+
     printf("Connecting to Agent %s:%d...\n",
            argv[1],
            PORT);
@@ -82,13 +246,17 @@ int main(int argc, char *argv[])
                 sizeof(server_addr)) < 0)
     {
         perror("Connection failed");
+
         close(sock);
+
         return 1;
     }
 
     printf("Connected to RemoteOps Agent successfully.\n");
 
+    // AUTH
     printf("Enter authentication token: ");
+
     scanf("%99s", token);
 
     snprintf(command,
@@ -96,10 +264,9 @@ int main(int argc, char *argv[])
              "AUTH %s\n",
              token);
 
-    send(sock,
-         command,
-         strlen(command),
-         0);
+    send_bytes(sock,
+               command,
+               strlen(command));
 
     int result =
         recv_line(sock,
@@ -109,24 +276,29 @@ int main(int argc, char *argv[])
     if (result <= 0)
     {
         printf("No authentication response received.\n");
+
         close(sock);
+
         return 1;
     }
 
-    printf("Agent response: %s\n", response);
+    printf("Agent response: %s\n",
+           response);
 
     if (strncmp(response,
                 "OK AUTHENTICATED",
                 16) != 0)
     {
         printf("Authentication failed. Closing Controller.\n");
+
         close(sock);
+
         return 1;
     }
 
-    // Clear leftover newline from scanf input
     getchar();
 
+    // Interactive command loop
     while (1)
     {
         printf("\nRemoteOps> ");
@@ -138,16 +310,53 @@ int main(int argc, char *argv[])
             break;
         }
 
-        // If user only presses Enter
-        if (strcmp(command, "\n") == 0)
+        command[strcspn(command, "\n")] = '\0';
+
+        if (strlen(command) == 0)
+            continue;
+
+        // PUT local command
+        // User types:
+        // PUT sample.txt
+        // Controller sends:
+        // PUT sample.txt <filesize>\n + raw bytes
+        if (strncmp(command,
+                    "PUT ",
+                    4) == 0)
         {
+            char filename[512];
+
+            if (sscanf(command,
+                       "PUT %511s",
+                       filename) != 1)
+            {
+                printf("Usage: PUT <filename>\n");
+
+                continue;
+            }
+
+            upload_file(sock,
+                        filename);
+
             continue;
         }
 
-        send(sock,
-             command,
-             strlen(command),
-             0);
+        // Add newline for protocol command
+        char protocol_command[BUFFER_SIZE];
+
+        snprintf(protocol_command,
+                 sizeof(protocol_command),
+                 "%s\n",
+                 command);
+
+        if (send_bytes(sock,
+                       protocol_command,
+                       strlen(protocol_command)) < 0)
+        {
+            printf("Failed to send command.\n");
+
+            break;
+        }
 
         result =
             recv_line(sock,
@@ -157,12 +366,15 @@ int main(int argc, char *argv[])
         if (result <= 0)
         {
             printf("Agent disconnected.\n");
+
             break;
         }
 
-        printf("Agent response: %s\n", response);
+        printf("Agent response: %s\n",
+               response);
 
-        if (strncmp(command, "QUIT", 4) == 0)
+        if (strcmp(command,
+                   "QUIT") == 0)
         {
             break;
         }

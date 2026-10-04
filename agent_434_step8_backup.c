@@ -5,19 +5,13 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/sysinfo.h>
-#include <sys/stat.h>
-#include <errno.h>
 
 #define PORT 9410
 #define AUTH_TOKEN "OPS-2434"
 #define SID "4342"
-
 #define BUFFER_SIZE 1024
 
-#define STORAGE_DIR "./agentfiles/IT24102434"
-#define MAX_FILE_SIZE (10 * 1024 * 1024)
-
-// Receive one complete text line ending with '\n'
+// Receive one complete line ending with '\n'
 int recv_line(int sock, char *buffer, int size)
 {
     int index = 0;
@@ -45,7 +39,7 @@ int recv_line(int sock, char *buffer, int size)
     return index;
 }
 
-// Send all text bytes
+// Send all bytes of a text message
 int send_all(int sock, const char *message)
 {
     int total_sent = 0;
@@ -67,7 +61,7 @@ int send_all(int sock, const char *message)
     return 0;
 }
 
-// SYSINFO
+// SYSINFO handler
 void send_sysinfo(int client_fd)
 {
     struct sysinfo info;
@@ -105,7 +99,7 @@ void send_sysinfo(int client_fd)
     send_all(client_fd, response);
 }
 
-// LISTPROC
+// LISTPROC handler
 void send_listproc(int client_fd)
 {
     FILE *fp;
@@ -158,7 +152,7 @@ void send_listproc(int client_fd)
     send_all(client_fd, response);
 }
 
-// Clean EXEC output so response remains one line
+// Replace newlines in command output with spaces
 void clean_output(char *text)
 {
     int i;
@@ -166,9 +160,12 @@ void clean_output(char *text)
     for (i = 0; text[i] != '\0'; i++)
     {
         if (text[i] == '\n' || text[i] == '\r')
+        {
             text[i] = ' ';
+        }
     }
 
+    // Remove trailing spaces
     while (strlen(text) > 0 &&
            text[strlen(text) - 1] == ' ')
     {
@@ -176,7 +173,7 @@ void clean_output(char *text)
     }
 }
 
-// EXEC
+// EXEC whitelist handler
 void handle_exec(int client_fd, const char *name)
 {
     const char *linux_command = NULL;
@@ -186,6 +183,7 @@ void handle_exec(int client_fd, const char *name)
     char output[700] = "";
     char response[1024];
 
+    // Map RemoteOps names to fixed Linux commands
     if (strcmp(name, "DATE") == 0)
     {
         linux_command = "date";
@@ -214,9 +212,6 @@ void handle_exec(int client_fd, const char *name)
                  SID);
 
         send_all(client_fd, response);
-
-        printf("EXEC command rejected: %s\n", name);
-
         return;
     }
 
@@ -257,180 +252,13 @@ void handle_exec(int client_fd, const char *name)
              SID);
 
     send_all(client_fd, response);
-
-    printf("EXEC command allowed: %s\n", name);
 }
 
-// Discard bytes if file is larger than allowed limit
-int discard_bytes(int client_fd, long long filesize)
-{
-    char buffer[BUFFER_SIZE];
-    long long remaining = filesize;
-
-    while (remaining > 0)
-    {
-        int amount =
-            remaining > BUFFER_SIZE
-            ? BUFFER_SIZE
-            : (int)remaining;
-
-        int received =
-            recv(client_fd,
-                 buffer,
-                 amount,
-                 0);
-
-        if (received <= 0)
-            return -1;
-
-        remaining -= received;
-    }
-
-    return 0;
-}
-
-// PUT file upload
-void handle_put(int client_fd,
-                const char *filename,
-                long long filesize)
-{
-    char filepath[512];
-    char response[512];
-    char buffer[BUFFER_SIZE];
-
-    // Prevent simple directory traversal
-    if (strstr(filename, "..") != NULL ||
-        strchr(filename, '/') != NULL)
-    {
-        // Still consume the file bytes sent by Controller
-        discard_bytes(client_fd, filesize);
-
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 009 INVALID_FILENAME SID:%s\n",
-                 SID);
-
-        send_all(client_fd, response);
-
-        printf("PUT rejected: invalid filename.\n");
-
-        return;
-    }
-
-    if (filesize < 0)
-    {
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 010 INVALID_FILESIZE SID:%s\n",
-                 SID);
-
-        send_all(client_fd, response);
-        return;
-    }
-
-    if (filesize > MAX_FILE_SIZE)
-    {
-        discard_bytes(client_fd, filesize);
-
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 004 FILE_TOO_LARGE SID:%s\n",
-                 SID);
-
-        send_all(client_fd, response);
-
-        printf("PUT rejected: file too large.\n");
-
-        return;
-    }
-
-    snprintf(filepath,
-             sizeof(filepath),
-             "%s/%s",
-             STORAGE_DIR,
-             filename);
-
-    FILE *fp = fopen(filepath, "wb");
-
-    if (fp == NULL)
-    {
-        discard_bytes(client_fd, filesize);
-
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 011 FILE_WRITE_FAILED SID:%s\n",
-                 SID);
-
-        send_all(client_fd, response);
-
-        perror("File open failed");
-
-        return;
-    }
-
-    long long remaining = filesize;
-
-    while (remaining > 0)
-    {
-        int amount =
-            remaining > BUFFER_SIZE
-            ? BUFFER_SIZE
-            : (int)remaining;
-
-        int received =
-            recv(client_fd,
-                 buffer,
-                 amount,
-                 0);
-
-        if (received <= 0)
-        {
-            printf("PUT failed: Controller disconnected.\n");
-
-            fclose(fp);
-            remove(filepath);
-
-            return;
-        }
-
-        fwrite(buffer,
-               1,
-               received,
-               fp);
-
-        remaining -= received;
-    }
-
-    fclose(fp);
-
-    snprintf(response,
-             sizeof(response),
-             "OK FILE_RECEIVED %s SID:%s\n",
-             filename,
-             SID);
-
-    send_all(client_fd, response);
-
-    printf("File received: %s (%lld bytes)\n",
-           filename,
-           filesize);
-}
-
-// MAIN
+// Main Agent
 int main()
 {
     int server_fd;
     struct sockaddr_in server_addr;
-
-    // Ensure storage directories exist
-    mkdir("./agentfiles", 0755);
-
-    if (mkdir(STORAGE_DIR, 0755) < 0 &&
-        errno != EEXIST)
-    {
-        perror("Could not create storage directory");
-        return 1;
-    }
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -472,7 +300,6 @@ int main()
 
     printf("RemoteOps Agent starting...\n");
     printf("Agent listening on TCP port %d...\n", PORT);
-    printf("Storage directory: %s\n", STORAGE_DIR);
     printf("Waiting for Controller connections...\n");
 
     while (1)
@@ -513,7 +340,7 @@ int main()
 
             printf("Received: %s\n", buffer);
 
-            // AUTHENTICATION
+            // Authentication
             if (!authenticated)
             {
                 if (strncmp(buffer, "AUTH ", 5) == 0)
@@ -585,44 +412,13 @@ int main()
             // EXEC
             else if (strncmp(buffer, "EXEC ", 5) == 0)
             {
-                char *command_name =
-                    buffer + 5;
+                char *command_name = buffer + 5;
 
                 handle_exec(client_fd,
                             command_name);
-            }
 
-            // PUT
-            else if (strncmp(buffer, "PUT ", 4) == 0)
-            {
-                char filename[256];
-                long long filesize;
-
-                int parsed =
-                    sscanf(buffer,
-                           "PUT %255s %lld",
-                           filename,
-                           &filesize);
-
-                if (parsed != 2)
-                {
-                    char response[128];
-
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 012 INVALID_PUT_FORMAT SID:%s\n",
-                             SID);
-
-                    send_all(client_fd, response);
-
-                    printf("Invalid PUT format.\n");
-                }
-                else
-                {
-                    handle_put(client_fd,
-                               filename,
-                               filesize);
-                }
+                printf("EXEC request processed: %s\n",
+                       command_name);
             }
 
             // QUIT
@@ -642,7 +438,7 @@ int main()
                 break;
             }
 
-            // UNKNOWN
+            // Unknown command
             else
             {
                 char response[128];
