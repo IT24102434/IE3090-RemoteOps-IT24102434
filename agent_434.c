@@ -13,11 +13,12 @@
 #define SID "4342"
 
 #define BUFFER_SIZE 1024
-
 #define STORAGE_DIR "./agentfiles/IT24102434"
 #define MAX_FILE_SIZE (10 * 1024 * 1024)
 
-// Receive one complete text line ending with '\n'
+/* --------------------------------------------------
+   Receive one complete protocol line ending in '\n'
+   -------------------------------------------------- */
 int recv_line(int sock, char *buffer, int size)
 {
     int index = 0;
@@ -29,13 +30,19 @@ int recv_line(int sock, char *buffer, int size)
         received = recv(sock, &ch, 1, 0);
 
         if (received == 0)
+        {
             return 0;
+        }
 
         if (received < 0)
+        {
             return -1;
+        }
 
         if (ch == '\n')
+        {
             break;
+        }
 
         buffer[index++] = ch;
     }
@@ -45,7 +52,9 @@ int recv_line(int sock, char *buffer, int size)
     return index;
 }
 
-// Send all text bytes
+/* --------------------------------------------------
+   Send an entire text message
+   -------------------------------------------------- */
 int send_all(int sock, const char *message)
 {
     int total_sent = 0;
@@ -59,7 +68,9 @@ int send_all(int sock, const char *message)
                         0);
 
         if (sent <= 0)
+        {
             return -1;
+        }
 
         total_sent += sent;
     }
@@ -67,7 +78,9 @@ int send_all(int sock, const char *message)
     return 0;
 }
 
-// SYSINFO
+/* --------------------------------------------------
+   SYSINFO
+   -------------------------------------------------- */
 void send_sysinfo(int client_fd)
 {
     struct sysinfo info;
@@ -87,16 +100,23 @@ void send_sysinfo(int client_fd)
     double cpu_load =
         (double)info.loads[0] / 65536.0;
 
-    long mem_used_mb =
-        (info.totalram - info.freeram) /
+    unsigned long long total_ram =
+        (unsigned long long)info.totalram *
+        info.mem_unit;
+
+    unsigned long long free_ram =
+        (unsigned long long)info.freeram *
+        info.mem_unit;
+
+    unsigned long long mem_used_mb =
+        (total_ram - free_ram) /
         (1024 * 1024);
 
-    long uptime_sec =
-        info.uptime;
+    long uptime_sec = info.uptime;
 
     snprintf(response,
              sizeof(response),
-             "OK SYSINFO %.2f %ld %ld SID:%s\n",
+             "OK SYSINFO %.2f %llu %ld SID:%s\n",
              cpu_load,
              mem_used_mb,
              uptime_sec,
@@ -105,7 +125,9 @@ void send_sysinfo(int client_fd)
     send_all(client_fd, response);
 }
 
-// LISTPROC
+/* --------------------------------------------------
+   LISTPROC
+   -------------------------------------------------- */
 void send_listproc(int client_fd)
 {
     FILE *fp;
@@ -130,8 +152,9 @@ void send_listproc(int client_fd)
     {
         line[strcspn(line, "\n")] = '\0';
 
-        if (strlen(process_list) + strlen(line) + 2
-            < sizeof(process_list))
+        if (strlen(process_list) +
+                strlen(line) + 2 <
+            sizeof(process_list))
         {
             strcat(process_list, line);
             strcat(process_list, ",");
@@ -146,7 +169,9 @@ void send_listproc(int client_fd)
 
     if (strlen(process_list) > 0)
     {
-        process_list[strlen(process_list) - 1] = '\0';
+        process_list[
+            strlen(process_list) - 1
+        ] = '\0';
     }
 
     snprintf(response,
@@ -158,15 +183,20 @@ void send_listproc(int client_fd)
     send_all(client_fd, response);
 }
 
-// Clean EXEC output so response remains one line
+/* --------------------------------------------------
+   Remove newlines from EXEC output
+   -------------------------------------------------- */
 void clean_output(char *text)
 {
     int i;
 
     for (i = 0; text[i] != '\0'; i++)
     {
-        if (text[i] == '\n' || text[i] == '\r')
+        if (text[i] == '\n' ||
+            text[i] == '\r')
+        {
             text[i] = ' ';
+        }
     }
 
     while (strlen(text) > 0 &&
@@ -176,8 +206,11 @@ void clean_output(char *text)
     }
 }
 
-// EXEC
-void handle_exec(int client_fd, const char *name)
+/* --------------------------------------------------
+   EXEC fixed whitelist
+   -------------------------------------------------- */
+void handle_exec(int client_fd,
+                 const char *name)
 {
     const char *linux_command = NULL;
 
@@ -215,7 +248,8 @@ void handle_exec(int client_fd, const char *name)
 
         send_all(client_fd, response);
 
-        printf("EXEC command rejected: %s\n", name);
+        printf("EXEC command rejected: %s\n",
+               name);
 
         return;
     }
@@ -230,13 +264,17 @@ void handle_exec(int client_fd, const char *name)
                  SID);
 
         send_all(client_fd, response);
+
         return;
     }
 
-    while (fgets(line, sizeof(line), fp) != NULL)
+    while (fgets(line,
+                 sizeof(line),
+                 fp) != NULL)
     {
-        if (strlen(output) + strlen(line) + 1
-            < sizeof(output))
+        if (strlen(output) +
+                strlen(line) + 1 <
+            sizeof(output))
         {
             strcat(output, line);
         }
@@ -258,13 +296,18 @@ void handle_exec(int client_fd, const char *name)
 
     send_all(client_fd, response);
 
-    printf("EXEC command allowed: %s\n", name);
+    printf("EXEC command allowed: %s\n",
+           name);
 }
 
-// Discard bytes if file is larger than allowed limit
-int discard_bytes(int client_fd, long long filesize)
+/* --------------------------------------------------
+   Discard raw bytes
+   -------------------------------------------------- */
+int discard_bytes(int client_fd,
+                  long long filesize)
 {
     char buffer[BUFFER_SIZE];
+
     long long remaining = filesize;
 
     while (remaining > 0)
@@ -281,7 +324,9 @@ int discard_bytes(int client_fd, long long filesize)
                  0);
 
         if (received <= 0)
+        {
             return -1;
+        }
 
         remaining -= received;
     }
@@ -289,7 +334,9 @@ int discard_bytes(int client_fd, long long filesize)
     return 0;
 }
 
-// PUT file upload
+/* --------------------------------------------------
+   PUT file upload
+   -------------------------------------------------- */
 void handle_put(int client_fd,
                 const char *filename,
                 long long filesize)
@@ -298,19 +345,20 @@ void handle_put(int client_fd,
     char response[512];
     char buffer[BUFFER_SIZE];
 
-    // Prevent simple directory traversal
+    /* Prevent directory traversal */
     if (strstr(filename, "..") != NULL ||
         strchr(filename, '/') != NULL)
     {
-        // Still consume the file bytes sent by Controller
-        discard_bytes(client_fd, filesize);
+        discard_bytes(client_fd,
+                      filesize);
 
         snprintf(response,
                  sizeof(response),
                  "ERR 009 INVALID_FILENAME SID:%s\n",
                  SID);
 
-        send_all(client_fd, response);
+        send_all(client_fd,
+                 response);
 
         printf("PUT rejected: invalid filename.\n");
 
@@ -324,20 +372,24 @@ void handle_put(int client_fd,
                  "ERR 010 INVALID_FILESIZE SID:%s\n",
                  SID);
 
-        send_all(client_fd, response);
+        send_all(client_fd,
+                 response);
+
         return;
     }
 
     if (filesize > MAX_FILE_SIZE)
     {
-        discard_bytes(client_fd, filesize);
+        discard_bytes(client_fd,
+                      filesize);
 
         snprintf(response,
                  sizeof(response),
                  "ERR 004 FILE_TOO_LARGE SID:%s\n",
                  SID);
 
-        send_all(client_fd, response);
+        send_all(client_fd,
+                 response);
 
         printf("PUT rejected: file too large.\n");
 
@@ -350,18 +402,21 @@ void handle_put(int client_fd,
              STORAGE_DIR,
              filename);
 
-    FILE *fp = fopen(filepath, "wb");
+    FILE *fp =
+        fopen(filepath, "wb");
 
     if (fp == NULL)
     {
-        discard_bytes(client_fd, filesize);
+        discard_bytes(client_fd,
+                      filesize);
 
         snprintf(response,
                  sizeof(response),
                  "ERR 011 FILE_WRITE_FAILED SID:%s\n",
                  SID);
 
-        send_all(client_fd, response);
+        send_all(client_fd,
+                 response);
 
         perror("File open failed");
 
@@ -385,18 +440,36 @@ void handle_put(int client_fd,
 
         if (received <= 0)
         {
-            printf("PUT failed: Controller disconnected.\n");
+            printf(
+                "PUT failed: Controller disconnected.\n"
+            );
 
             fclose(fp);
+
             remove(filepath);
 
             return;
         }
 
-        fwrite(buffer,
-               1,
-               received,
-               fp);
+        size_t written =
+            fwrite(buffer,
+                   1,
+                   received,
+                   fp);
+
+        if (written !=
+            (size_t)received)
+        {
+            printf(
+                "PUT failed while writing file.\n"
+            );
+
+            fclose(fp);
+
+            remove(filepath);
+
+            return;
+        }
 
         remaining -= received;
     }
@@ -409,34 +482,238 @@ void handle_put(int client_fd,
              filename,
              SID);
 
-    send_all(client_fd, response);
+    send_all(client_fd,
+             response);
 
-    printf("File received: %s (%lld bytes)\n",
-           filename,
-           filesize);
+    printf(
+        "File received: %s (%lld bytes)\n",
+        filename,
+        filesize
+    );
 }
 
-// MAIN
+/* --------------------------------------------------
+   GET file download
+   -------------------------------------------------- */
+void handle_get(int client_fd,
+                const char *filename)
+{
+    char filepath[512];
+    char response[512];
+    char buffer[BUFFER_SIZE];
+
+    /* Prevent directory traversal */
+    if (strstr(filename, "..") != NULL ||
+        strchr(filename, '/') != NULL)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response);
+
+        printf(
+            "GET rejected: invalid filename.\n"
+        );
+
+        return;
+    }
+
+    snprintf(filepath,
+             sizeof(filepath),
+             "%s/%s",
+             STORAGE_DIR,
+             filename);
+
+    FILE *fp =
+        fopen(filepath, "rb");
+
+    if (fp == NULL)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response);
+
+        printf(
+            "GET failed: file not found: %s\n",
+            filename
+        );
+
+        return;
+    }
+
+    /*
+       Find stored file size
+    */
+    if (fseek(fp,
+              0,
+              SEEK_END) != 0)
+    {
+        fclose(fp);
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response);
+
+        return;
+    }
+
+    long file_position =
+        ftell(fp);
+
+    if (file_position < 0)
+    {
+        fclose(fp);
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response);
+
+        return;
+    }
+
+    long long filesize =
+        (long long)file_position;
+
+    rewind(fp);
+
+    /*
+       Send GET header first
+    */
+    snprintf(response,
+             sizeof(response),
+             "OK FILE_SEND %s %lld SID:%s\n",
+             filename,
+             filesize,
+             SID);
+
+    if (send_all(client_fd,
+                 response) < 0)
+    {
+        printf(
+            "GET failed sending response header.\n"
+        );
+
+        fclose(fp);
+
+        return;
+    }
+
+    /*
+       Send exactly filesize bytes
+    */
+    long long total_sent = 0;
+
+    while (total_sent < filesize)
+    {
+        size_t bytes_read =
+            fread(buffer,
+                  1,
+                  sizeof(buffer),
+                  fp);
+
+        if (bytes_read == 0)
+        {
+            if (ferror(fp))
+            {
+                printf(
+                    "Error reading stored file.\n"
+                );
+            }
+
+            break;
+        }
+
+        int sent_total = 0;
+
+        while (sent_total <
+               (int)bytes_read)
+        {
+            int sent =
+                send(client_fd,
+                     buffer + sent_total,
+                     bytes_read -
+                     sent_total,
+                     0);
+
+            if (sent <= 0)
+            {
+                printf(
+                    "GET transfer failed.\n"
+                );
+
+                fclose(fp);
+
+                return;
+            }
+
+            sent_total += sent;
+        }
+
+        total_sent += bytes_read;
+    }
+
+    fclose(fp);
+
+    printf(
+        "File sent: %s (%lld bytes)\n",
+        filename,
+        total_sent
+    );
+}
+
+/* --------------------------------------------------
+   MAIN AGENT
+   -------------------------------------------------- */
 int main()
 {
     int server_fd;
+
     struct sockaddr_in server_addr;
 
-    // Ensure storage directories exist
+    /*
+       Ensure personalized storage exists
+    */
     mkdir("./agentfiles", 0755);
 
     if (mkdir(STORAGE_DIR, 0755) < 0 &&
         errno != EEXIST)
     {
-        perror("Could not create storage directory");
+        perror(
+            "Could not create storage directory"
+        );
+
         return 1;
     }
 
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    /*
+       Create TCP socket
+    */
+    server_fd =
+        socket(AF_INET,
+               SOCK_STREAM,
+               0);
 
     if (server_fd < 0)
     {
-        perror("Socket creation failed");
+        perror(
+            "Socket creation failed"
+        );
+
         return 1;
     }
 
@@ -448,219 +725,416 @@ int main()
                &opt,
                sizeof(opt));
 
-    memset(&server_addr, 0, sizeof(server_addr));
+    memset(&server_addr,
+           0,
+           sizeof(server_addr));
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(PORT);
+    server_addr.sin_family =
+        AF_INET;
 
+    server_addr.sin_addr.s_addr =
+        INADDR_ANY;
+
+    server_addr.sin_port =
+        htons(PORT);
+
+    /*
+       Bind personalized port
+    */
     if (bind(server_fd,
-             (struct sockaddr *)&server_addr,
+             (struct sockaddr *)
+             &server_addr,
              sizeof(server_addr)) < 0)
     {
         perror("Bind failed");
+
         close(server_fd);
+
         return 1;
     }
 
+    /*
+       Listen
+    */
     if (listen(server_fd, 5) < 0)
     {
         perror("Listen failed");
+
         close(server_fd);
+
         return 1;
     }
 
-    printf("RemoteOps Agent starting...\n");
-    printf("Agent listening on TCP port %d...\n", PORT);
-    printf("Storage directory: %s\n", STORAGE_DIR);
-    printf("Waiting for Controller connections...\n");
+    printf(
+        "RemoteOps Agent starting...\n"
+    );
 
+    printf(
+        "Agent listening on TCP port %d...\n",
+        PORT
+    );
+
+    printf(
+        "Storage directory: %s\n",
+        STORAGE_DIR
+    );
+
+    printf(
+        "Waiting for Controller connections...\n"
+    );
+
+    /*
+       Sequential connection handling for now.
+       Multi-client threading is added later.
+    */
     while (1)
     {
         int client_fd;
+
         struct sockaddr_in client_addr;
-        socklen_t client_len = sizeof(client_addr);
+
+        socklen_t client_len =
+            sizeof(client_addr);
 
         char buffer[BUFFER_SIZE];
 
         int authenticated = 0;
 
-        client_fd = accept(server_fd,
-                           (struct sockaddr *)&client_addr,
-                           &client_len);
+        client_fd =
+            accept(server_fd,
+                   (struct sockaddr *)
+                   &client_addr,
+                   &client_len);
 
         if (client_fd < 0)
         {
             perror("Accept failed");
+
             continue;
         }
 
-        printf("\nController connected from %s\n",
-               inet_ntoa(client_addr.sin_addr));
+        printf(
+            "\nController connected from %s\n",
+            inet_ntoa(
+                client_addr.sin_addr
+            )
+        );
 
+        /*
+           Handle Controller commands
+        */
         while (1)
         {
             int result =
-                recv_line(client_fd,
-                          buffer,
-                          sizeof(buffer));
+                recv_line(
+                    client_fd,
+                    buffer,
+                    sizeof(buffer)
+                );
 
             if (result <= 0)
             {
-                printf("Controller disconnected.\n");
+                printf(
+                    "Controller disconnected.\n"
+                );
+
                 break;
             }
 
-            printf("Received: %s\n", buffer);
+            printf(
+                "Received: %s\n",
+                buffer
+            );
 
-            // AUTHENTICATION
+            /* --------------------------
+               AUTH
+               -------------------------- */
             if (!authenticated)
             {
-                if (strncmp(buffer, "AUTH ", 5) == 0)
+                if (strncmp(
+                        buffer,
+                        "AUTH ",
+                        5
+                    ) == 0)
                 {
-                    char *token = buffer + 5;
+                    char *token =
+                        buffer + 5;
 
-                    if (strcmp(token, AUTH_TOKEN) == 0)
+                    if (strcmp(
+                            token,
+                            AUTH_TOKEN
+                        ) == 0)
                     {
                         char response[128];
 
-                        snprintf(response,
-                                 sizeof(response),
-                                 "OK AUTHENTICATED SID:%s\n",
-                                 SID);
+                        snprintf(
+                            response,
+                            sizeof(response),
+                            "OK AUTHENTICATED SID:%s\n",
+                            SID
+                        );
 
-                        send_all(client_fd, response);
+                        send_all(
+                            client_fd,
+                            response
+                        );
 
                         authenticated = 1;
 
-                        printf("Authentication successful.\n");
+                        printf(
+                            "Authentication successful.\n"
+                        );
                     }
                     else
                     {
                         char response[128];
 
-                        snprintf(response,
-                                 sizeof(response),
-                                 "ERR 001 AUTH_FAILED SID:%s\n",
-                                 SID);
+                        snprintf(
+                            response,
+                            sizeof(response),
+                            "ERR 001 AUTH_FAILED SID:%s\n",
+                            SID
+                        );
 
-                        send_all(client_fd, response);
+                        send_all(
+                            client_fd,
+                            response
+                        );
 
-                        printf("Authentication failed.\n");
+                        printf(
+                            "Authentication failed.\n"
+                        );
                     }
                 }
                 else
                 {
                     char response[128];
 
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 003 AUTH_REQUIRED SID:%s\n",
-                             SID);
+                    snprintf(
+                        response,
+                        sizeof(response),
+                        "ERR 003 AUTH_REQUIRED SID:%s\n",
+                        SID
+                    );
 
-                    send_all(client_fd, response);
+                    send_all(
+                        client_fd,
+                        response
+                    );
 
-                    printf("Command rejected: authentication required.\n");
+                    printf(
+                        "Command rejected: authentication required.\n"
+                    );
                 }
 
                 continue;
             }
 
-            // SYSINFO
-            if (strcmp(buffer, "SYSINFO") == 0)
+            /* --------------------------
+               SYSINFO
+               -------------------------- */
+            if (strcmp(
+                    buffer,
+                    "SYSINFO"
+                ) == 0)
             {
                 send_sysinfo(client_fd);
 
-                printf("SYSINFO response sent.\n");
+                printf(
+                    "SYSINFO response sent.\n"
+                );
             }
 
-            // LISTPROC
-            else if (strcmp(buffer, "LISTPROC") == 0)
+            /* --------------------------
+               LISTPROC
+               -------------------------- */
+            else if (strcmp(
+                         buffer,
+                         "LISTPROC"
+                     ) == 0)
             {
                 send_listproc(client_fd);
 
-                printf("LISTPROC response sent.\n");
+                printf(
+                    "LISTPROC response sent.\n"
+                );
             }
 
-            // EXEC
-            else if (strncmp(buffer, "EXEC ", 5) == 0)
+            /* --------------------------
+               EXEC
+               -------------------------- */
+            else if (strncmp(
+                         buffer,
+                         "EXEC ",
+                         5
+                     ) == 0)
             {
                 char *command_name =
                     buffer + 5;
 
-                handle_exec(client_fd,
-                            command_name);
+                handle_exec(
+                    client_fd,
+                    command_name
+                );
             }
 
-            // PUT
-            else if (strncmp(buffer, "PUT ", 4) == 0)
+            /* --------------------------
+               PUT
+               -------------------------- */
+            else if (strncmp(
+                         buffer,
+                         "PUT ",
+                         4
+                     ) == 0)
             {
                 char filename[256];
+
                 long long filesize;
 
                 int parsed =
-                    sscanf(buffer,
-                           "PUT %255s %lld",
-                           filename,
-                           &filesize);
+                    sscanf(
+                        buffer,
+                        "PUT %255s %lld",
+                        filename,
+                        &filesize
+                    );
 
                 if (parsed != 2)
                 {
                     char response[128];
 
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 012 INVALID_PUT_FORMAT SID:%s\n",
-                             SID);
+                    snprintf(
+                        response,
+                        sizeof(response),
+                        "ERR 012 INVALID_PUT_FORMAT SID:%s\n",
+                        SID
+                    );
 
-                    send_all(client_fd, response);
+                    send_all(
+                        client_fd,
+                        response
+                    );
 
-                    printf("Invalid PUT format.\n");
+                    printf(
+                        "Invalid PUT format.\n"
+                    );
                 }
                 else
                 {
-                    handle_put(client_fd,
-                               filename,
-                               filesize);
+                    handle_put(
+                        client_fd,
+                        filename,
+                        filesize
+                    );
                 }
             }
 
-            // QUIT
-            else if (strcmp(buffer, "QUIT") == 0)
+            /* --------------------------
+               GET
+               -------------------------- */
+            else if (strncmp(
+                         buffer,
+                         "GET ",
+                         4
+                     ) == 0)
+            {
+                char filename[256];
+
+                int parsed =
+                    sscanf(
+                        buffer,
+                        "GET %255s",
+                        filename
+                    );
+
+                if (parsed != 1)
+                {
+                    char response[128];
+
+                    snprintf(
+                        response,
+                        sizeof(response),
+                        "ERR 013 INVALID_GET_FORMAT SID:%s\n",
+                        SID
+                    );
+
+                    send_all(
+                        client_fd,
+                        response
+                    );
+
+                    printf(
+                        "Invalid GET format.\n"
+                    );
+                }
+                else
+                {
+                    handle_get(
+                        client_fd,
+                        filename
+                    );
+                }
+            }
+
+            /* --------------------------
+               QUIT
+               -------------------------- */
+            else if (strcmp(
+                         buffer,
+                         "QUIT"
+                     ) == 0)
             {
                 char response[128];
 
-                snprintf(response,
-                         sizeof(response),
-                         "OK BYE SID:%s\n",
-                         SID);
+                snprintf(
+                    response,
+                    sizeof(response),
+                    "OK BYE SID:%s\n",
+                    SID
+                );
 
-                send_all(client_fd, response);
+                send_all(
+                    client_fd,
+                    response
+                );
 
-                printf("Controller requested QUIT.\n");
+                printf(
+                    "Controller requested QUIT.\n"
+                );
 
                 break;
             }
 
-            // UNKNOWN
+            /* --------------------------
+               UNKNOWN
+               -------------------------- */
             else
             {
                 char response[128];
 
-                snprintf(response,
-                         sizeof(response),
-                         "ERR 099 UNKNOWN_COMMAND SID:%s\n",
-                         SID);
+                snprintf(
+                    response,
+                    sizeof(response),
+                    "ERR 099 UNKNOWN_COMMAND SID:%s\n",
+                    SID
+                );
 
-                send_all(client_fd, response);
+                send_all(
+                    client_fd,
+                    response
+                );
 
-                printf("Unknown command rejected.\n");
+                printf(
+                    "Unknown command rejected.\n"
+                );
             }
         }
 
         close(client_fd);
 
-        printf("Controller connection closed.\n");
+        printf(
+            "Controller connection closed.\n"
+        );
     }
 
     close(server_fd);
