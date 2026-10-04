@@ -2,4 +2,5 @@ agent_434
 controller_434
 *.o
 sample.txt
+downloaded_*
 agentfiles/
