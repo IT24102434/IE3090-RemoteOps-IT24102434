@@ -7,7 +7,6 @@
 #include <sys/sysinfo.h>
 #include <sys/stat.h>
 #include <errno.h>
-#include <pthread.h>
 
 #define PORT 9410
 #define AUTH_TOKEN "OPS-2434"
@@ -17,19 +16,9 @@
 #define STORAGE_DIR "./agentfiles/IT24102434"
 #define MAX_FILE_SIZE (10 * 1024 * 1024)
 
-#define MONITOR_INTERVAL 5
-
-typedef struct
-{
-    int active;
-    int udp_port;
-    char client_ip[INET_ADDRSTRLEN];
-    pthread_t thread_id;
-
-} MonitorContext;
-
-
-// Receive one complete TCP line ending with \n
+/* --------------------------------------------------
+   Receive one complete protocol line ending in '\n'
+   -------------------------------------------------- */
 int recv_line(int sock, char *buffer, int size)
 {
     int index = 0;
@@ -41,13 +30,19 @@ int recv_line(int sock, char *buffer, int size)
         received = recv(sock, &ch, 1, 0);
 
         if (received == 0)
+        {
             return 0;
+        }
 
         if (received < 0)
+        {
             return -1;
+        }
 
         if (ch == '\n')
+        {
             break;
+        }
 
         buffer[index++] = ch;
     }
@@ -57,8 +52,9 @@ int recv_line(int sock, char *buffer, int size)
     return index;
 }
 
-
-// Send all text bytes
+/* --------------------------------------------------
+   Send an entire text message
+   -------------------------------------------------- */
 int send_all(int sock, const char *message)
 {
     int total_sent = 0;
@@ -72,7 +68,9 @@ int send_all(int sock, const char *message)
                         0);
 
         if (sent <= 0)
+        {
             return -1;
+        }
 
         total_sent += sent;
     }
@@ -80,18 +78,26 @@ int send_all(int sock, const char *message)
     return 0;
 }
 
-
-// Get current Linux system statistics
-int get_system_stats(double *cpu_load,
-                     unsigned long long *mem_used_mb,
-                     long *uptime_sec)
+/* --------------------------------------------------
+   SYSINFO
+   -------------------------------------------------- */
+void send_sysinfo(int client_fd)
 {
     struct sysinfo info;
+    char response[256];
 
     if (sysinfo(&info) != 0)
-        return -1;
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 006 SYSINFO_FAILED SID:%s\n",
+                 SID);
 
-    *cpu_load =
+        send_all(client_fd, response);
+        return;
+    }
+
+    double cpu_load =
         (double)info.loads[0] / 65536.0;
 
     unsigned long long total_ram =
@@ -102,39 +108,11 @@ int get_system_stats(double *cpu_load,
         (unsigned long long)info.freeram *
         info.mem_unit;
 
-    *mem_used_mb =
+    unsigned long long mem_used_mb =
         (total_ram - free_ram) /
         (1024 * 1024);
 
-    *uptime_sec =
-        info.uptime;
-
-    return 0;
-}
-
-
-// SYSINFO command
-void send_sysinfo(int client_fd)
-{
-    char response[256];
-
-    double cpu_load;
-    unsigned long long mem_used_mb;
-    long uptime_sec;
-
-    if (get_system_stats(&cpu_load,
-                         &mem_used_mb,
-                         &uptime_sec) != 0)
-    {
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 006 SYSINFO_FAILED SID:%s\n",
-                 SID);
-
-        send_all(client_fd, response);
-
-        return;
-    }
+    long uptime_sec = info.uptime;
 
     snprintf(response,
              sizeof(response),
@@ -147,8 +125,9 @@ void send_sysinfo(int client_fd)
     send_all(client_fd, response);
 }
 
-
-// LISTPROC command
+/* --------------------------------------------------
+   LISTPROC
+   -------------------------------------------------- */
 void send_listproc(int client_fd)
 {
     FILE *fp;
@@ -166,18 +145,15 @@ void send_listproc(int client_fd)
                  SID);
 
         send_all(client_fd, response);
-
         return;
     }
 
-    while (fgets(line,
-                 sizeof(line),
-                 fp) != NULL)
+    while (fgets(line, sizeof(line), fp) != NULL)
     {
         line[strcspn(line, "\n")] = '\0';
 
         if (strlen(process_list) +
-            strlen(line) + 2 <
+                strlen(line) + 2 <
             sizeof(process_list))
         {
             strcat(process_list, line);
@@ -207,8 +183,9 @@ void send_listproc(int client_fd)
     send_all(client_fd, response);
 }
 
-
-// Replace newlines in EXEC output with spaces
+/* --------------------------------------------------
+   Remove newlines from EXEC output
+   -------------------------------------------------- */
 void clean_output(char *text)
 {
     int i;
@@ -229,8 +206,9 @@ void clean_output(char *text)
     }
 }
 
-
-// EXEC whitelist
+/* --------------------------------------------------
+   EXEC fixed whitelist
+   -------------------------------------------------- */
 void handle_exec(int client_fd,
                  const char *name)
 {
@@ -295,7 +273,7 @@ void handle_exec(int client_fd,
                  fp) != NULL)
     {
         if (strlen(output) +
-            strlen(line) + 1 <
+                strlen(line) + 1 <
             sizeof(output))
         {
             strcat(output, line);
@@ -322,8 +300,9 @@ void handle_exec(int client_fd,
            name);
 }
 
-
-// Discard raw bytes
+/* --------------------------------------------------
+   Discard raw bytes
+   -------------------------------------------------- */
 int discard_bytes(int client_fd,
                   long long filesize)
 {
@@ -345,7 +324,9 @@ int discard_bytes(int client_fd,
                  0);
 
         if (received <= 0)
+        {
             return -1;
+        }
 
         remaining -= received;
     }
@@ -353,8 +334,9 @@ int discard_bytes(int client_fd,
     return 0;
 }
 
-
-// PUT file upload
+/* --------------------------------------------------
+   PUT file upload
+   -------------------------------------------------- */
 void handle_put(int client_fd,
                 const char *filename,
                 long long filesize)
@@ -363,17 +345,22 @@ void handle_put(int client_fd,
     char response[512];
     char buffer[BUFFER_SIZE];
 
+    /* Prevent directory traversal */
     if (strstr(filename, "..") != NULL ||
         strchr(filename, '/') != NULL)
     {
-        discard_bytes(client_fd, filesize);
+        discard_bytes(client_fd,
+                      filesize);
 
         snprintf(response,
                  sizeof(response),
                  "ERR 009 INVALID_FILENAME SID:%s\n",
                  SID);
 
-        send_all(client_fd, response);
+        send_all(client_fd,
+                 response);
+
+        printf("PUT rejected: invalid filename.\n");
 
         return;
     }
@@ -385,21 +372,26 @@ void handle_put(int client_fd,
                  "ERR 010 INVALID_FILESIZE SID:%s\n",
                  SID);
 
-        send_all(client_fd, response);
+        send_all(client_fd,
+                 response);
 
         return;
     }
 
     if (filesize > MAX_FILE_SIZE)
     {
-        discard_bytes(client_fd, filesize);
+        discard_bytes(client_fd,
+                      filesize);
 
         snprintf(response,
                  sizeof(response),
                  "ERR 004 FILE_TOO_LARGE SID:%s\n",
                  SID);
 
-        send_all(client_fd, response);
+        send_all(client_fd,
+                 response);
+
+        printf("PUT rejected: file too large.\n");
 
         return;
     }
@@ -415,14 +407,18 @@ void handle_put(int client_fd,
 
     if (fp == NULL)
     {
-        discard_bytes(client_fd, filesize);
+        discard_bytes(client_fd,
+                      filesize);
 
         snprintf(response,
                  sizeof(response),
                  "ERR 011 FILE_WRITE_FAILED SID:%s\n",
                  SID);
 
-        send_all(client_fd, response);
+        send_all(client_fd,
+                 response);
+
+        perror("File open failed");
 
         return;
     }
@@ -444,6 +440,10 @@ void handle_put(int client_fd,
 
         if (received <= 0)
         {
+            printf(
+                "PUT failed: Controller disconnected.\n"
+            );
+
             fclose(fp);
 
             remove(filepath);
@@ -460,6 +460,10 @@ void handle_put(int client_fd,
         if (written !=
             (size_t)received)
         {
+            printf(
+                "PUT failed while writing file.\n"
+            );
+
             fclose(fp);
 
             remove(filepath);
@@ -478,15 +482,19 @@ void handle_put(int client_fd,
              filename,
              SID);
 
-    send_all(client_fd, response);
+    send_all(client_fd,
+             response);
 
-    printf("File received: %s (%lld bytes)\n",
-           filename,
-           filesize);
+    printf(
+        "File received: %s (%lld bytes)\n",
+        filename,
+        filesize
+    );
 }
 
-
-// GET file download
+/* --------------------------------------------------
+   GET file download
+   -------------------------------------------------- */
 void handle_get(int client_fd,
                 const char *filename)
 {
@@ -494,6 +502,7 @@ void handle_get(int client_fd,
     char response[512];
     char buffer[BUFFER_SIZE];
 
+    /* Prevent directory traversal */
     if (strstr(filename, "..") != NULL ||
         strchr(filename, '/') != NULL)
     {
@@ -502,7 +511,12 @@ void handle_get(int client_fd,
                  "ERR 005 FILE_NOT_FOUND SID:%s\n",
                  SID);
 
-        send_all(client_fd, response);
+        send_all(client_fd,
+                 response);
+
+        printf(
+            "GET rejected: invalid filename.\n"
+        );
 
         return;
     }
@@ -523,21 +537,63 @@ void handle_get(int client_fd,
                  "ERR 005 FILE_NOT_FOUND SID:%s\n",
                  SID);
 
-        send_all(client_fd, response);
+        send_all(client_fd,
+                 response);
 
-        printf("GET failed: file not found: %s\n",
-               filename);
+        printf(
+            "GET failed: file not found: %s\n",
+            filename
+        );
 
         return;
     }
 
-    fseek(fp, 0, SEEK_END);
+    /*
+       Find stored file size
+    */
+    if (fseek(fp,
+              0,
+              SEEK_END) != 0)
+    {
+        fclose(fp);
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response);
+
+        return;
+    }
+
+    long file_position =
+        ftell(fp);
+
+    if (file_position < 0)
+    {
+        fclose(fp);
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response);
+
+        return;
+    }
 
     long long filesize =
-        (long long)ftell(fp);
+        (long long)file_position;
 
     rewind(fp);
 
+    /*
+       Send GET header first
+    */
     snprintf(response,
              sizeof(response),
              "OK FILE_SEND %s %lld SID:%s\n",
@@ -548,11 +604,18 @@ void handle_get(int client_fd,
     if (send_all(client_fd,
                  response) < 0)
     {
+        printf(
+            "GET failed sending response header.\n"
+        );
+
         fclose(fp);
 
         return;
     }
 
+    /*
+       Send exactly filesize bytes
+    */
     long long total_sent = 0;
 
     while (total_sent < filesize)
@@ -564,7 +627,16 @@ void handle_get(int client_fd,
                   fp);
 
         if (bytes_read == 0)
+        {
+            if (ferror(fp))
+            {
+                printf(
+                    "Error reading stored file.\n"
+                );
+            }
+
             break;
+        }
 
         int sent_total = 0;
 
@@ -574,11 +646,16 @@ void handle_get(int client_fd,
             int sent =
                 send(client_fd,
                      buffer + sent_total,
-                     bytes_read - sent_total,
+                     bytes_read -
+                     sent_total,
                      0);
 
             if (sent <= 0)
             {
+                printf(
+                    "GET transfer failed.\n"
+                );
+
                 fclose(fp);
 
                 return;
@@ -592,161 +669,40 @@ void handle_get(int client_fd,
 
     fclose(fp);
 
-    printf("File sent: %s (%lld bytes)\n",
-           filename,
-           total_sent);
+    printf(
+        "File sent: %s (%lld bytes)\n",
+        filename,
+        total_sent
+    );
 }
 
-
-// UDP monitoring thread
-void *monitor_thread(void *arg)
-{
-    MonitorContext *ctx =
-        (MonitorContext *)arg;
-
-    int udp_sock =
-        socket(AF_INET,
-               SOCK_DGRAM,
-               0);
-
-    if (udp_sock < 0)
-    {
-        perror("UDP socket creation failed");
-
-        ctx->active = 0;
-
-        return NULL;
-    }
-
-    struct sockaddr_in controller_addr;
-
-    memset(&controller_addr,
-           0,
-           sizeof(controller_addr));
-
-    controller_addr.sin_family =
-        AF_INET;
-
-    controller_addr.sin_port =
-        htons(ctx->udp_port);
-
-    inet_pton(AF_INET,
-              ctx->client_ip,
-              &controller_addr.sin_addr);
-
-    while (ctx->active)
-    {
-        double cpu_load;
-
-        unsigned long long mem_used_mb;
-
-        long uptime_sec;
-
-        if (get_system_stats(
-                &cpu_load,
-                &mem_used_mb,
-                &uptime_sec) == 0)
-        {
-            char message[256];
-
-            snprintf(message,
-                     sizeof(message),
-                     "SYSINFO %.2f %llu %ld SID:%s",
-                     cpu_load,
-                     mem_used_mb,
-                     uptime_sec,
-                     SID);
-
-            sendto(udp_sock,
-                   message,
-                   strlen(message),
-                   0,
-                   (struct sockaddr *)
-                   &controller_addr,
-                   sizeof(controller_addr));
-
-            printf(
-                "UDP monitor sent to %s:%d\n",
-                ctx->client_ip,
-                ctx->udp_port
-            );
-        }
-
-        sleep(MONITOR_INTERVAL);
-    }
-
-    close(udp_sock);
-
-    return NULL;
-}
-
-
-// Start UDP monitoring
-int start_monitoring(MonitorContext *ctx,
-                     const char *client_ip,
-                     int udp_port)
-{
-    if (ctx->active)
-        return -1;
-
-    ctx->active = 1;
-
-    ctx->udp_port =
-        udp_port;
-
-    strncpy(ctx->client_ip,
-            client_ip,
-            sizeof(ctx->client_ip) - 1);
-
-    ctx->client_ip[
-        sizeof(ctx->client_ip) - 1
-    ] = '\0';
-
-    if (pthread_create(
-            &ctx->thread_id,
-            NULL,
-            monitor_thread,
-            ctx) != 0)
-    {
-        ctx->active = 0;
-
-        return -1;
-    }
-
-    return 0;
-}
-
-
-// Stop UDP monitoring
-void stop_monitoring(MonitorContext *ctx)
-{
-    if (!ctx->active)
-        return;
-
-    ctx->active = 0;
-
-    pthread_join(ctx->thread_id,
-                 NULL);
-}
-
-
-// Main Agent program
+/* --------------------------------------------------
+   MAIN AGENT
+   -------------------------------------------------- */
 int main()
 {
     int server_fd;
 
     struct sockaddr_in server_addr;
 
+    /*
+       Ensure personalized storage exists
+    */
     mkdir("./agentfiles", 0755);
 
     if (mkdir(STORAGE_DIR, 0755) < 0 &&
         errno != EEXIST)
     {
-        perror("Could not create storage directory");
+        perror(
+            "Could not create storage directory"
+        );
 
         return 1;
     }
 
+    /*
+       Create TCP socket
+    */
     server_fd =
         socket(AF_INET,
                SOCK_STREAM,
@@ -754,7 +710,9 @@ int main()
 
     if (server_fd < 0)
     {
-        perror("Socket creation failed");
+        perror(
+            "Socket creation failed"
+        );
 
         return 1;
     }
@@ -780,6 +738,9 @@ int main()
     server_addr.sin_port =
         htons(PORT);
 
+    /*
+       Bind personalized port
+    */
     if (bind(server_fd,
              (struct sockaddr *)
              &server_addr,
@@ -792,6 +753,9 @@ int main()
         return 1;
     }
 
+    /*
+       Listen
+    */
     if (listen(server_fd, 5) < 0)
     {
         perror("Listen failed");
@@ -801,19 +765,28 @@ int main()
         return 1;
     }
 
-    printf("RemoteOps Agent starting...\n");
+    printf(
+        "RemoteOps Agent starting...\n"
+    );
 
-    printf("Agent listening on TCP port %d...\n",
-           PORT);
+    printf(
+        "Agent listening on TCP port %d...\n",
+        PORT
+    );
 
-    printf("Storage directory: %s\n",
-           STORAGE_DIR);
+    printf(
+        "Storage directory: %s\n",
+        STORAGE_DIR
+    );
 
-    printf("UDP monitoring interval: %d seconds\n",
-           MONITOR_INTERVAL);
+    printf(
+        "Waiting for Controller connections...\n"
+    );
 
-    printf("Waiting for Controller connections...\n");
-
+    /*
+       Sequential connection handling for now.
+       Multi-client threading is added later.
+    */
     while (1)
     {
         int client_fd;
@@ -826,12 +799,6 @@ int main()
         char buffer[BUFFER_SIZE];
 
         int authenticated = 0;
-
-        MonitorContext monitor;
-
-        memset(&monitor,
-               0,
-               sizeof(monitor));
 
         client_fd =
             accept(server_fd,
@@ -846,55 +813,71 @@ int main()
             continue;
         }
 
-        char client_ip[INET_ADDRSTRLEN];
+        printf(
+            "\nController connected from %s\n",
+            inet_ntoa(
+                client_addr.sin_addr
+            )
+        );
 
-        inet_ntop(AF_INET,
-                  &client_addr.sin_addr,
-                  client_ip,
-                  sizeof(client_ip));
-
-        printf("\nController connected from %s\n",
-               client_ip);
-
+        /*
+           Handle Controller commands
+        */
         while (1)
         {
             int result =
-                recv_line(client_fd,
-                          buffer,
-                          sizeof(buffer));
+                recv_line(
+                    client_fd,
+                    buffer,
+                    sizeof(buffer)
+                );
 
             if (result <= 0)
             {
-                printf("Controller disconnected.\n");
+                printf(
+                    "Controller disconnected.\n"
+                );
 
                 break;
             }
 
-            printf("Received: %s\n",
-                   buffer);
+            printf(
+                "Received: %s\n",
+                buffer
+            );
 
-            // Authentication
+            /* --------------------------
+               AUTH
+               -------------------------- */
             if (!authenticated)
             {
-                if (strncmp(buffer,
-                            "AUTH ",
-                            5) == 0)
+                if (strncmp(
+                        buffer,
+                        "AUTH ",
+                        5
+                    ) == 0)
                 {
                     char *token =
                         buffer + 5;
 
-                    if (strcmp(token,
-                               AUTH_TOKEN) == 0)
+                    if (strcmp(
+                            token,
+                            AUTH_TOKEN
+                        ) == 0)
                     {
                         char response[128];
 
-                        snprintf(response,
-                                 sizeof(response),
-                                 "OK AUTHENTICATED SID:%s\n",
-                                 SID);
+                        snprintf(
+                            response,
+                            sizeof(response),
+                            "OK AUTHENTICATED SID:%s\n",
+                            SID
+                        );
 
-                        send_all(client_fd,
-                                 response);
+                        send_all(
+                            client_fd,
+                            response
+                        );
 
                         authenticated = 1;
 
@@ -906,13 +889,17 @@ int main()
                     {
                         char response[128];
 
-                        snprintf(response,
-                                 sizeof(response),
-                                 "ERR 001 AUTH_FAILED SID:%s\n",
-                                 SID);
+                        snprintf(
+                            response,
+                            sizeof(response),
+                            "ERR 001 AUTH_FAILED SID:%s\n",
+                            SID
+                        );
 
-                        send_all(client_fd,
-                                 response);
+                        send_all(
+                            client_fd,
+                            response
+                        );
 
                         printf(
                             "Authentication failed.\n"
@@ -923,223 +910,231 @@ int main()
                 {
                     char response[128];
 
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 003 AUTH_REQUIRED SID:%s\n",
-                             SID);
+                    snprintf(
+                        response,
+                        sizeof(response),
+                        "ERR 003 AUTH_REQUIRED SID:%s\n",
+                        SID
+                    );
 
-                    send_all(client_fd,
-                             response);
+                    send_all(
+                        client_fd,
+                        response
+                    );
+
+                    printf(
+                        "Command rejected: authentication required.\n"
+                    );
                 }
 
                 continue;
             }
 
-            // SYSINFO
-            if (strcmp(buffer,
-                       "SYSINFO") == 0)
+            /* --------------------------
+               SYSINFO
+               -------------------------- */
+            if (strcmp(
+                    buffer,
+                    "SYSINFO"
+                ) == 0)
             {
                 send_sysinfo(client_fd);
 
-                printf("SYSINFO response sent.\n");
+                printf(
+                    "SYSINFO response sent.\n"
+                );
             }
 
-            // LISTPROC
-            else if (strcmp(buffer,
-                            "LISTPROC") == 0)
+            /* --------------------------
+               LISTPROC
+               -------------------------- */
+            else if (strcmp(
+                         buffer,
+                         "LISTPROC"
+                     ) == 0)
             {
                 send_listproc(client_fd);
 
-                printf("LISTPROC response sent.\n");
+                printf(
+                    "LISTPROC response sent.\n"
+                );
             }
 
-            // EXEC
-            else if (strncmp(buffer,
-                             "EXEC ",
-                             5) == 0)
+            /* --------------------------
+               EXEC
+               -------------------------- */
+            else if (strncmp(
+                         buffer,
+                         "EXEC ",
+                         5
+                     ) == 0)
             {
-                handle_exec(client_fd,
-                            buffer + 5);
+                char *command_name =
+                    buffer + 5;
+
+                handle_exec(
+                    client_fd,
+                    command_name
+                );
             }
 
-            // PUT
-            else if (strncmp(buffer,
-                             "PUT ",
-                             4) == 0)
+            /* --------------------------
+               PUT
+               -------------------------- */
+            else if (strncmp(
+                         buffer,
+                         "PUT ",
+                         4
+                     ) == 0)
             {
                 char filename[256];
 
                 long long filesize;
 
-                if (sscanf(buffer,
-                           "PUT %255s %lld",
-                           filename,
-                           &filesize) == 2)
-                {
-                    handle_put(client_fd,
-                               filename,
-                               filesize);
-                }
-                else
+                int parsed =
+                    sscanf(
+                        buffer,
+                        "PUT %255s %lld",
+                        filename,
+                        &filesize
+                    );
+
+                if (parsed != 2)
                 {
                     char response[128];
 
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 012 INVALID_PUT_FORMAT SID:%s\n",
-                             SID);
+                    snprintf(
+                        response,
+                        sizeof(response),
+                        "ERR 012 INVALID_PUT_FORMAT SID:%s\n",
+                        SID
+                    );
 
-                    send_all(client_fd,
-                             response);
+                    send_all(
+                        client_fd,
+                        response
+                    );
+
+                    printf(
+                        "Invalid PUT format.\n"
+                    );
+                }
+                else
+                {
+                    handle_put(
+                        client_fd,
+                        filename,
+                        filesize
+                    );
                 }
             }
 
-            // GET
-            else if (strncmp(buffer,
-                             "GET ",
-                             4) == 0)
+            /* --------------------------
+               GET
+               -------------------------- */
+            else if (strncmp(
+                         buffer,
+                         "GET ",
+                         4
+                     ) == 0)
             {
                 char filename[256];
 
-                if (sscanf(buffer,
-                           "GET %255s",
-                           filename) == 1)
+                int parsed =
+                    sscanf(
+                        buffer,
+                        "GET %255s",
+                        filename
+                    );
+
+                if (parsed != 1)
                 {
-                    handle_get(client_fd,
-                               filename);
+                    char response[128];
+
+                    snprintf(
+                        response,
+                        sizeof(response),
+                        "ERR 013 INVALID_GET_FORMAT SID:%s\n",
+                        SID
+                    );
+
+                    send_all(
+                        client_fd,
+                        response
+                    );
+
+                    printf(
+                        "Invalid GET format.\n"
+                    );
                 }
                 else
                 {
-                    char response[128];
-
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 013 INVALID_GET_FORMAT SID:%s\n",
-                             SID);
-
-                    send_all(client_fd,
-                             response);
+                    handle_get(
+                        client_fd,
+                        filename
+                    );
                 }
             }
 
-            // MONITOR START
-            else if (strncmp(buffer,
-                             "MONITOR START ",
-                             14) == 0)
+            /* --------------------------
+               QUIT
+               -------------------------- */
+            else if (strcmp(
+                         buffer,
+                         "QUIT"
+                     ) == 0)
             {
-                int udp_port;
-
-                if (sscanf(buffer,
-                           "MONITOR START %d",
-                           &udp_port) == 1 &&
-                    udp_port > 0 &&
-                    udp_port <= 65535)
-                {
-                    char response[128];
-
-                    if (start_monitoring(
-                            &monitor,
-                            client_ip,
-                            udp_port) == 0)
-                    {
-                        snprintf(response,
-                                 sizeof(response),
-                                 "OK MONITOR_STARTED SID:%s\n",
-                                 SID);
-
-                        send_all(client_fd,
-                                 response);
-
-                        printf(
-                            "UDP monitoring started on port %d.\n",
-                            udp_port
-                        );
-                    }
-                    else
-                    {
-                        snprintf(response,
-                                 sizeof(response),
-                                 "ERR 014 MONITOR_ALREADY_RUNNING SID:%s\n",
-                                 SID);
-
-                        send_all(client_fd,
-                                 response);
-                    }
-                }
-                else
-                {
-                    char response[128];
-
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 015 INVALID_UDP_PORT SID:%s\n",
-                             SID);
-
-                    send_all(client_fd,
-                             response);
-                }
-            }
-
-            // MONITOR STOP
-            else if (strcmp(buffer,
-                            "MONITOR STOP") == 0)
-            {
-                stop_monitoring(&monitor);
-
                 char response[128];
 
-                snprintf(response,
-                         sizeof(response),
-                         "OK MONITOR_STOPPED SID:%s\n",
-                         SID);
+                snprintf(
+                    response,
+                    sizeof(response),
+                    "OK BYE SID:%s\n",
+                    SID
+                );
 
-                send_all(client_fd,
-                         response);
+                send_all(
+                    client_fd,
+                    response
+                );
 
-                printf("UDP monitoring stopped.\n");
-            }
-
-            // QUIT
-            else if (strcmp(buffer,
-                            "QUIT") == 0)
-            {
-                stop_monitoring(&monitor);
-
-                char response[128];
-
-                snprintf(response,
-                         sizeof(response),
-                         "OK BYE SID:%s\n",
-                         SID);
-
-                send_all(client_fd,
-                         response);
-
-                printf("Controller requested QUIT.\n");
+                printf(
+                    "Controller requested QUIT.\n"
+                );
 
                 break;
             }
 
-            // Unknown command
+            /* --------------------------
+               UNKNOWN
+               -------------------------- */
             else
             {
                 char response[128];
 
-                snprintf(response,
-                         sizeof(response),
-                         "ERR 099 UNKNOWN_COMMAND SID:%s\n",
-                         SID);
+                snprintf(
+                    response,
+                    sizeof(response),
+                    "ERR 099 UNKNOWN_COMMAND SID:%s\n",
+                    SID
+                );
 
-                send_all(client_fd,
-                         response);
+                send_all(
+                    client_fd,
+                    response
+                );
+
+                printf(
+                    "Unknown command rejected.\n"
+                );
             }
         }
 
-        stop_monitoring(&monitor);
-
         close(client_fd);
 
-        printf("Controller connection closed.\n");
+        printf(
+            "Controller connection closed.\n"
+        );
     }
 
     close(server_fd);
