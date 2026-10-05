@@ -819,7 +819,7 @@ int main(int argc,
             }
 
             char protocol_command[
-                BUFFER_SIZE + 2
+                BUFFER_SIZE
             ];
 
             snprintf(
@@ -910,7 +910,7 @@ int main(int argc,
 
         // Send other TCP commands
         char protocol_command[
-            BUFFER_SIZE + 2
+            BUFFER_SIZE
         ];
 
         snprintf(
