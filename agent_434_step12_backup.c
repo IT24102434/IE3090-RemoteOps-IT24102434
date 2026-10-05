@@ -8,8 +8,6 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <pthread.h>
-#include <time.h>
-#include <stdarg.h>
 
 #define PORT 9410
 #define AUTH_TOKEN "OPS-2434"
@@ -20,12 +18,8 @@
 #define MAX_FILE_SIZE (10 * 1024 * 1024)
 
 #define MONITOR_INTERVAL 5
-#define LOG_FILE "remoteops_IT24102434.log"
-
-pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 
-// Store information about one UDP monitoring session
 typedef struct
 {
     int active;
@@ -36,7 +30,6 @@ typedef struct
 } MonitorContext;
 
 
-// Store information about one connected Controller
 typedef struct
 {
     int client_fd;
@@ -45,55 +38,8 @@ typedef struct
 } ClientContext;
 
 
-// Write a timestamped message to the log file
-void log_message(const char *format, ...)
-{
-    pthread_mutex_lock(&log_mutex);
-
-    FILE *log_fp = fopen(LOG_FILE, "a");
-
-    if (log_fp != NULL)
-    {
-        time_t now = time(NULL);
-
-        struct tm time_info;
-
-        localtime_r(&now, &time_info);
-
-        char timestamp[64];
-
-        strftime(timestamp,
-                 sizeof(timestamp),
-                 "%Y-%m-%d %H:%M:%S",
-                 &time_info);
-
-        fprintf(log_fp,
-                "[%s] ",
-                timestamp);
-
-        va_list args;
-
-        va_start(args, format);
-
-        vfprintf(log_fp,
-                 format,
-                 args);
-
-        va_end(args);
-
-        fprintf(log_fp, "\n");
-
-        fclose(log_fp);
-    }
-
-    pthread_mutex_unlock(&log_mutex);
-}
-
-
-// Receive one complete TCP line ending with newline
-int recv_line(int sock,
-              char *buffer,
-              int size)
+// Receive one complete TCP line
+int recv_line(int sock, char *buffer, int size)
 {
     int index = 0;
     char ch;
@@ -101,11 +47,7 @@ int recv_line(int sock,
 
     while (index < size - 1)
     {
-        received =
-            recv(sock,
-                 &ch,
-                 1,
-                 0);
+        received = recv(sock, &ch, 1, 0);
 
         if (received == 0)
             return 0;
@@ -125,20 +67,18 @@ int recv_line(int sock,
 }
 
 
-// Send an entire text response
-int send_all(int sock,
-             const char *message)
+// Send all text bytes
+int send_all(int sock, const char *message)
 {
     int total_sent = 0;
     int length = strlen(message);
 
     while (total_sent < length)
     {
-        int sent =
-            send(sock,
-                 message + total_sent,
-                 length - total_sent,
-                 0);
+        int sent = send(sock,
+                        message + total_sent,
+                        length - total_sent,
+                        0);
 
         if (sent <= 0)
             return -1;
@@ -150,7 +90,7 @@ int send_all(int sock,
 }
 
 
-// Read Linux system information
+// Get Linux system statistics
 int get_system_stats(double *cpu_load,
                      unsigned long long *mem_used_mb,
                      long *uptime_sec)
@@ -182,7 +122,7 @@ int get_system_stats(double *cpu_load,
 }
 
 
-// Handle SYSINFO command
+// SYSINFO command
 void send_sysinfo(int client_fd)
 {
     char response[256];
@@ -200,8 +140,7 @@ void send_sysinfo(int client_fd)
                  "ERR 006 SYSINFO_FAILED SID:%s\n",
                  SID);
 
-        send_all(client_fd,
-                 response);
+        send_all(client_fd, response);
 
         return;
     }
@@ -214,12 +153,11 @@ void send_sysinfo(int client_fd)
              uptime_sec,
              SID);
 
-    send_all(client_fd,
-             response);
+    send_all(client_fd, response);
 }
 
 
-// Handle LISTPROC command
+// LISTPROC command
 void send_listproc(int client_fd)
 {
     FILE *fp;
@@ -227,9 +165,7 @@ void send_listproc(int client_fd)
     char process_list[800] = "";
     char response[1024];
 
-    fp =
-        popen("ps -eo pid,comm --no-headers",
-              "r");
+    fp = popen("ps -eo pid,comm --no-headers", "r");
 
     if (fp == NULL)
     {
@@ -238,8 +174,7 @@ void send_listproc(int client_fd)
                  "ERR 007 LISTPROC_FAILED SID:%s\n",
                  SID);
 
-        send_all(client_fd,
-                 response);
+        send_all(client_fd, response);
 
         return;
     }
@@ -248,19 +183,14 @@ void send_listproc(int client_fd)
                  sizeof(line),
                  fp) != NULL)
     {
-        line[
-            strcspn(line, "\n")
-        ] = '\0';
+        line[strcspn(line, "\n")] = '\0';
 
         if (strlen(process_list) +
             strlen(line) + 2 <
             sizeof(process_list))
         {
-            strcat(process_list,
-                   line);
-
-            strcat(process_list,
-                   ",");
+            strcat(process_list, line);
+            strcat(process_list, ",");
         }
         else
         {
@@ -283,19 +213,16 @@ void send_listproc(int client_fd)
              process_list,
              SID);
 
-    send_all(client_fd,
-             response);
+    send_all(client_fd, response);
 }
 
 
-// Replace EXEC output newlines with spaces
+// Clean EXEC output
 void clean_output(char *text)
 {
     int i;
 
-    for (i = 0;
-         text[i] != '\0';
-         i++)
+    for (i = 0; text[i] != '\0'; i++)
     {
         if (text[i] == '\n' ||
             text[i] == '\r')
@@ -305,51 +232,41 @@ void clean_output(char *text)
     }
 
     while (strlen(text) > 0 &&
-           text[
-               strlen(text) - 1
-           ] == ' ')
+           text[strlen(text) - 1] == ' ')
     {
-        text[
-            strlen(text) - 1
-        ] = '\0';
+        text[strlen(text) - 1] = '\0';
     }
 }
 
 
-// Handle EXEC commands using fixed whitelist
+// EXEC whitelist
 void handle_exec(int client_fd,
                  const char *name)
 {
     const char *linux_command = NULL;
 
     FILE *fp;
-
     char line[256];
     char output[700] = "";
     char response[1024];
 
-    if (strcmp(name,
-               "DATE") == 0)
+    if (strcmp(name, "DATE") == 0)
     {
         linux_command = "date";
     }
-    else if (strcmp(name,
-                    "UPTIME") == 0)
+    else if (strcmp(name, "UPTIME") == 0)
     {
         linux_command = "uptime";
     }
-    else if (strcmp(name,
-                    "DISKFREE") == 0)
+    else if (strcmp(name, "DISKFREE") == 0)
     {
         linux_command = "df -h /";
     }
-    else if (strcmp(name,
-                    "HOSTNAME") == 0)
+    else if (strcmp(name, "HOSTNAME") == 0)
     {
         linux_command = "hostname";
     }
-    else if (strcmp(name,
-                    "WHOAMI") == 0)
+    else if (strcmp(name, "WHOAMI") == 0)
     {
         linux_command = "whoami";
     }
@@ -360,25 +277,15 @@ void handle_exec(int client_fd,
                  "ERR 002 COMMAND_NOT_ALLOWED SID:%s\n",
                  SID);
 
-        send_all(client_fd,
-                 response);
+        send_all(client_fd, response);
 
-        printf(
-            "EXEC command rejected: %s\n",
-            name
-        );
-
-        log_message(
-            "EXEC_DENIED command=%s",
-            name
-        );
+        printf("EXEC command rejected: %s\n",
+               name);
 
         return;
     }
 
-    fp =
-        popen(linux_command,
-              "r");
+    fp = popen(linux_command, "r");
 
     if (fp == NULL)
     {
@@ -387,13 +294,7 @@ void handle_exec(int client_fd,
                  "ERR 008 EXEC_FAILED SID:%s\n",
                  SID);
 
-        send_all(client_fd,
-                 response);
-
-        log_message(
-            "EXEC_FAILED command=%s",
-            name
-        );
+        send_all(client_fd, response);
 
         return;
     }
@@ -406,8 +307,7 @@ void handle_exec(int client_fd,
             strlen(line) + 1 <
             sizeof(output))
         {
-            strcat(output,
-                   line);
+            strcat(output, line);
         }
         else
         {
@@ -425,29 +325,19 @@ void handle_exec(int client_fd,
              output,
              SID);
 
-    send_all(client_fd,
-             response);
+    send_all(client_fd, response);
 
-    printf(
-        "EXEC command allowed: %s\n",
-        name
-    );
-
-    log_message(
-        "EXEC_SUCCESS command=%s",
-        name
-    );
+    printf("EXEC command allowed: %s\n",
+           name);
 }
 
 
-// Discard a fixed number of raw bytes
+// Discard raw bytes
 int discard_bytes(int client_fd,
                   long long filesize)
 {
     char buffer[BUFFER_SIZE];
-
-    long long remaining =
-        filesize;
+    long long remaining = filesize;
 
     while (remaining > 0)
     {
@@ -472,7 +362,7 @@ int discard_bytes(int client_fd,
 }
 
 
-// Handle PUT file upload
+// PUT file upload
 void handle_put(int client_fd,
                 const char *filename,
                 long long filesize)
@@ -481,26 +371,17 @@ void handle_put(int client_fd,
     char response[512];
     char buffer[BUFFER_SIZE];
 
-    if (strstr(filename,
-               "..") != NULL ||
-        strchr(filename,
-               '/') != NULL)
+    if (strstr(filename, "..") != NULL ||
+        strchr(filename, '/') != NULL)
     {
-        discard_bytes(client_fd,
-                      filesize);
+        discard_bytes(client_fd, filesize);
 
         snprintf(response,
                  sizeof(response),
                  "ERR 009 INVALID_FILENAME SID:%s\n",
                  SID);
 
-        send_all(client_fd,
-                 response);
-
-        log_message(
-            "PUT file=%s status=INVALID_FILENAME",
-            filename
-        );
+        send_all(client_fd, response);
 
         return;
     }
@@ -512,35 +393,21 @@ void handle_put(int client_fd,
                  "ERR 010 INVALID_FILESIZE SID:%s\n",
                  SID);
 
-        send_all(client_fd,
-                 response);
-
-        log_message(
-            "PUT file=%s status=INVALID_FILESIZE",
-            filename
-        );
+        send_all(client_fd, response);
 
         return;
     }
 
     if (filesize > MAX_FILE_SIZE)
     {
-        discard_bytes(client_fd,
-                      filesize);
+        discard_bytes(client_fd, filesize);
 
         snprintf(response,
                  sizeof(response),
                  "ERR 004 FILE_TOO_LARGE SID:%s\n",
                  SID);
 
-        send_all(client_fd,
-                 response);
-
-        log_message(
-            "PUT file=%s bytes=%lld status=FILE_TOO_LARGE",
-            filename,
-            filesize
-        );
+        send_all(client_fd, response);
 
         return;
     }
@@ -552,32 +419,23 @@ void handle_put(int client_fd,
              filename);
 
     FILE *fp =
-        fopen(filepath,
-              "wb");
+        fopen(filepath, "wb");
 
     if (fp == NULL)
     {
-        discard_bytes(client_fd,
-                      filesize);
+        discard_bytes(client_fd, filesize);
 
         snprintf(response,
                  sizeof(response),
                  "ERR 011 FILE_WRITE_FAILED SID:%s\n",
                  SID);
 
-        send_all(client_fd,
-                 response);
-
-        log_message(
-            "PUT file=%s status=WRITE_FAILED",
-            filename
-        );
+        send_all(client_fd, response);
 
         return;
     }
 
-    long long remaining =
-        filesize;
+    long long remaining = filesize;
 
     while (remaining > 0)
     {
@@ -595,13 +453,7 @@ void handle_put(int client_fd,
         if (received <= 0)
         {
             fclose(fp);
-
             remove(filepath);
-
-            log_message(
-                "PUT file=%s status=TRANSFER_FAILED",
-                filename
-            );
 
             return;
         }
@@ -616,13 +468,7 @@ void handle_put(int client_fd,
             (size_t)received)
         {
             fclose(fp);
-
             remove(filepath);
-
-            log_message(
-                "PUT file=%s status=WRITE_FAILED",
-                filename
-            );
 
             return;
         }
@@ -638,24 +484,15 @@ void handle_put(int client_fd,
              filename,
              SID);
 
-    send_all(client_fd,
-             response);
+    send_all(client_fd, response);
 
-    printf(
-        "File received: %s (%lld bytes)\n",
-        filename,
-        filesize
-    );
-
-    log_message(
-        "PUT file=%s bytes=%lld status=SUCCESS",
-        filename,
-        filesize
-    );
+    printf("File received: %s (%lld bytes)\n",
+           filename,
+           filesize);
 }
 
 
-// Handle GET file download
+// GET file download
 void handle_get(int client_fd,
                 const char *filename)
 {
@@ -663,23 +500,15 @@ void handle_get(int client_fd,
     char response[512];
     char buffer[BUFFER_SIZE];
 
-    if (strstr(filename,
-               "..") != NULL ||
-        strchr(filename,
-               '/') != NULL)
+    if (strstr(filename, "..") != NULL ||
+        strchr(filename, '/') != NULL)
     {
         snprintf(response,
                  sizeof(response),
                  "ERR 005 FILE_NOT_FOUND SID:%s\n",
                  SID);
 
-        send_all(client_fd,
-                 response);
-
-        log_message(
-            "GET file=%s status=INVALID_FILENAME",
-            filename
-        );
+        send_all(client_fd, response);
 
         return;
     }
@@ -691,8 +520,7 @@ void handle_get(int client_fd,
              filename);
 
     FILE *fp =
-        fopen(filepath,
-              "rb");
+        fopen(filepath, "rb");
 
     if (fp == NULL)
     {
@@ -701,69 +529,18 @@ void handle_get(int client_fd,
                  "ERR 005 FILE_NOT_FOUND SID:%s\n",
                  SID);
 
-        send_all(client_fd,
-                 response);
+        send_all(client_fd, response);
 
-        printf(
-            "GET failed: file not found: %s\n",
-            filename
-        );
-
-        log_message(
-            "GET file=%s status=FILE_NOT_FOUND",
-            filename
-        );
+        printf("GET failed: file not found: %s\n",
+               filename);
 
         return;
     }
 
-    if (fseek(fp,
-              0,
-              SEEK_END) != 0)
-    {
-        fclose(fp);
-
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
-                 SID);
-
-        send_all(client_fd,
-                 response);
-
-        log_message(
-            "GET file=%s status=READ_FAILED",
-            filename
-        );
-
-        return;
-    }
-
-    long file_position =
-        ftell(fp);
-
-    if (file_position < 0)
-    {
-        fclose(fp);
-
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 005 FILE_NOT_FOUND SID:%s\n",
-                 SID);
-
-        send_all(client_fd,
-                 response);
-
-        log_message(
-            "GET file=%s status=READ_FAILED",
-            filename
-        );
-
-        return;
-    }
+    fseek(fp, 0, SEEK_END);
 
     long long filesize =
-        (long long)file_position;
+        (long long)ftell(fp);
 
     rewind(fp);
 
@@ -779,11 +556,6 @@ void handle_get(int client_fd,
     {
         fclose(fp);
 
-        log_message(
-            "GET file=%s status=HEADER_SEND_FAILED",
-            filename
-        );
-
         return;
     }
 
@@ -798,9 +570,7 @@ void handle_get(int client_fd,
                   fp);
 
         if (bytes_read == 0)
-        {
             break;
-        }
 
         int sent_total = 0;
 
@@ -817,11 +587,6 @@ void handle_get(int client_fd,
             {
                 fclose(fp);
 
-                log_message(
-                    "GET file=%s status=TRANSFER_FAILED",
-                    filename
-                );
-
                 return;
             }
 
@@ -833,21 +598,13 @@ void handle_get(int client_fd,
 
     fclose(fp);
 
-    printf(
-        "File sent: %s (%lld bytes)\n",
-        filename,
-        total_sent
-    );
-
-    log_message(
-        "GET file=%s bytes=%lld status=SUCCESS",
-        filename,
-        total_sent
-    );
+    printf("File sent: %s (%lld bytes)\n",
+           filename,
+           total_sent);
 }
 
 
-// Send periodic system information using UDP
+// UDP monitoring thread
 void *monitor_thread(void *arg)
 {
     MonitorContext *ctx =
@@ -860,9 +617,7 @@ void *monitor_thread(void *arg)
 
     if (udp_sock < 0)
     {
-        perror(
-            "UDP socket creation failed"
-        );
+        perror("UDP socket creation failed");
 
         ctx->active = 0;
 
@@ -888,9 +643,7 @@ void *monitor_thread(void *arg)
     while (ctx->active)
     {
         double cpu_load;
-
         unsigned long long mem_used_mb;
-
         long uptime_sec;
 
         if (get_system_stats(
@@ -941,9 +694,7 @@ int start_monitoring(MonitorContext *ctx,
         return -1;
 
     ctx->active = 1;
-
-    ctx->udp_port =
-        udp_port;
+    ctx->udp_port = udp_port;
 
     strncpy(ctx->client_ip,
             client_ip,
@@ -981,7 +732,7 @@ void stop_monitoring(MonitorContext *ctx)
 }
 
 
-// Handle one Controller in a separate thread
+// Handle one Controller connection
 void *client_thread(void *arg)
 {
     ClientContext *client =
@@ -1012,15 +763,8 @@ void *client_thread(void *arg)
               client_ip,
               sizeof(client_ip));
 
-    printf(
-        "\nController connected from %s\n",
-        client_ip
-    );
-
-    log_message(
-        "CONNECT client=%s",
-        client_ip
-    );
+    printf("\nController connected from %s\n",
+           client_ip);
 
     while (1)
     {
@@ -1039,32 +783,11 @@ void *client_thread(void *arg)
             break;
         }
 
-        printf(
-            "[%s] Received: %s\n",
-            client_ip,
-            buffer
-        );
+        printf("[%s] Received: %s\n",
+               client_ip,
+               buffer);
 
-        // Do not write the authentication token into the log
-        if (strncmp(buffer,
-                    "AUTH ",
-                    5) == 0)
-        {
-            log_message(
-                "COMMAND client=%s command=AUTH",
-                client_ip
-            );
-        }
-        else
-        {
-            log_message(
-                "COMMAND client=%s command=%s",
-                client_ip,
-                buffer
-            );
-        }
-
-        // Require authentication before all other commands
+        // Authentication
         if (!authenticated)
         {
             if (strncmp(buffer,
@@ -1093,11 +816,6 @@ void *client_thread(void *arg)
                         "[%s] Authentication successful.\n",
                         client_ip
                     );
-
-                    log_message(
-                        "AUTH_SUCCESS client=%s",
-                        client_ip
-                    );
                 }
                 else
                 {
@@ -1115,11 +833,6 @@ void *client_thread(void *arg)
                         "[%s] Authentication failed.\n",
                         client_ip
                     );
-
-                    log_message(
-                        "AUTH_FAILED client=%s",
-                        client_ip
-                    );
                 }
             }
             else
@@ -1133,11 +846,6 @@ void *client_thread(void *arg)
 
                 send_all(client_fd,
                          response);
-
-                log_message(
-                    "AUTH_REQUIRED client=%s",
-                    client_ip
-                );
             }
 
             continue;
@@ -1182,7 +890,6 @@ void *client_thread(void *arg)
                          4) == 0)
         {
             char filename[256];
-
             long long filesize;
 
             if (sscanf(buffer,
@@ -1205,10 +912,6 @@ void *client_thread(void *arg)
 
                 send_all(client_fd,
                          response);
-
-                log_message(
-                    "PUT status=INVALID_FORMAT"
-                );
             }
         }
 
@@ -1237,10 +940,6 @@ void *client_thread(void *arg)
 
                 send_all(client_fd,
                          response);
-
-                log_message(
-                    "GET status=INVALID_FORMAT"
-                );
             }
         }
 
@@ -1277,12 +976,6 @@ void *client_thread(void *arg)
                         client_ip,
                         udp_port
                     );
-
-                    log_message(
-                        "MONITOR_START client=%s udp_port=%d",
-                        client_ip,
-                        udp_port
-                    );
                 }
                 else
                 {
@@ -1293,11 +986,6 @@ void *client_thread(void *arg)
 
                     send_all(client_fd,
                              response);
-
-                    log_message(
-                        "MONITOR_START client=%s status=ALREADY_RUNNING",
-                        client_ip
-                    );
                 }
             }
             else
@@ -1311,11 +999,6 @@ void *client_thread(void *arg)
 
                 send_all(client_fd,
                          response);
-
-                log_message(
-                    "MONITOR_START client=%s status=INVALID_PORT",
-                    client_ip
-                );
             }
         }
 
@@ -1337,11 +1020,6 @@ void *client_thread(void *arg)
 
             printf(
                 "[%s] UDP monitoring stopped.\n",
-                client_ip
-            );
-
-            log_message(
-                "MONITOR_STOP client=%s",
                 client_ip
             );
         }
@@ -1367,15 +1045,10 @@ void *client_thread(void *arg)
                 client_ip
             );
 
-            log_message(
-                "QUIT client=%s",
-                client_ip
-            );
-
             break;
         }
 
-        // Reject unknown commands
+        // Unknown command
         else
         {
             char response[128];
@@ -1387,12 +1060,6 @@ void *client_thread(void *arg)
 
             send_all(client_fd,
                      response);
-
-            log_message(
-                "UNKNOWN_COMMAND client=%s command=%s",
-                client_ip,
-                buffer
-            );
         }
     }
 
@@ -1402,11 +1069,6 @@ void *client_thread(void *arg)
 
     printf(
         "Controller connection from %s closed.\n",
-        client_ip
-    );
-
-    log_message(
-        "DISCONNECT client=%s",
         client_ip
     );
 
@@ -1421,11 +1083,9 @@ int main()
 
     struct sockaddr_in server_addr;
 
-    mkdir("./agentfiles",
-          0755);
+    mkdir("./agentfiles", 0755);
 
-    if (mkdir(STORAGE_DIR,
-              0755) < 0 &&
+    if (mkdir(STORAGE_DIR, 0755) < 0 &&
         errno != EEXIST)
     {
         perror(
@@ -1442,9 +1102,7 @@ int main()
 
     if (server_fd < 0)
     {
-        perror(
-            "Socket creation failed"
-        );
+        perror("Socket creation failed");
 
         return 1;
     }
@@ -1482,8 +1140,7 @@ int main()
         return 1;
     }
 
-    if (listen(server_fd,
-               10) < 0)
+    if (listen(server_fd, 10) < 0)
     {
         perror("Listen failed");
 
@@ -1492,9 +1149,7 @@ int main()
         return 1;
     }
 
-    printf(
-        "RemoteOps Agent starting...\n"
-    );
+    printf("RemoteOps Agent starting...\n");
 
     printf(
         "Agent listening on TCP port %d...\n",
@@ -1516,26 +1171,13 @@ int main()
     );
 
     printf(
-        "Activity log: %s\n",
-        LOG_FILE
-    );
-
-    printf(
         "Waiting for Controller connections...\n"
-    );
-
-    log_message(
-        "AGENT_START port=%d storage=%s",
-        PORT,
-        STORAGE_DIR
     );
 
     while (1)
     {
         ClientContext *client =
-            malloc(
-                sizeof(ClientContext)
-            );
+            malloc(sizeof(ClientContext));
 
         if (client == NULL)
         {
@@ -1547,23 +1189,17 @@ int main()
         }
 
         socklen_t client_len =
-            sizeof(
-                client->client_addr
-            );
+            sizeof(client->client_addr);
 
         client->client_fd =
-            accept(
-                server_fd,
-                (struct sockaddr *)
-                &client->client_addr,
-                &client_len
-            );
+            accept(server_fd,
+                   (struct sockaddr *)
+                   &client->client_addr,
+                   &client_len);
 
         if (client->client_fd < 0)
         {
-            perror(
-                "Accept failed"
-            );
+            perror("Accept failed");
 
             free(client);
 
@@ -1582,18 +1218,14 @@ int main()
                 "Failed to create client thread"
             );
 
-            close(
-                client->client_fd
-            );
+            close(client->client_fd);
 
             free(client);
 
             continue;
         }
 
-        pthread_detach(
-            thread_id
-        );
+        pthread_detach(thread_id);
     }
 
     close(server_fd);
