@@ -19,7 +19,6 @@
 
 #define MONITOR_INTERVAL 5
 
-
 typedef struct
 {
     int active;
@@ -30,15 +29,7 @@ typedef struct
 } MonitorContext;
 
 
-typedef struct
-{
-    int client_fd;
-    struct sockaddr_in client_addr;
-
-} ClientContext;
-
-
-// Receive one complete TCP line
+// Receive one complete TCP line ending with \n
 int recv_line(int sock, char *buffer, int size)
 {
     int index = 0;
@@ -90,7 +81,7 @@ int send_all(int sock, const char *message)
 }
 
 
-// Get Linux system statistics
+// Get current Linux system statistics
 int get_system_stats(double *cpu_load,
                      unsigned long long *mem_used_mb,
                      long *uptime_sec)
@@ -217,7 +208,7 @@ void send_listproc(int client_fd)
 }
 
 
-// Clean EXEC output
+// Replace newlines in EXEC output with spaces
 void clean_output(char *text)
 {
     int i;
@@ -337,6 +328,7 @@ int discard_bytes(int client_fd,
                   long long filesize)
 {
     char buffer[BUFFER_SIZE];
+
     long long remaining = filesize;
 
     while (remaining > 0)
@@ -453,6 +445,7 @@ void handle_put(int client_fd,
         if (received <= 0)
         {
             fclose(fp);
+
             remove(filepath);
 
             return;
@@ -468,6 +461,7 @@ void handle_put(int client_fd,
             (size_t)received)
         {
             fclose(fp);
+
             remove(filepath);
 
             return;
@@ -643,7 +637,9 @@ void *monitor_thread(void *arg)
     while (ctx->active)
     {
         double cpu_load;
+
         unsigned long long mem_used_mb;
+
         long uptime_sec;
 
         if (get_system_stats(
@@ -694,7 +690,9 @@ int start_monitoring(MonitorContext *ctx,
         return -1;
 
     ctx->active = 1;
-    ctx->udp_port = udp_port;
+
+    ctx->udp_port =
+        udp_port;
 
     strncpy(ctx->client_ip,
             client_ip,
@@ -732,350 +730,6 @@ void stop_monitoring(MonitorContext *ctx)
 }
 
 
-// Handle one Controller connection
-void *client_thread(void *arg)
-{
-    ClientContext *client =
-        (ClientContext *)arg;
-
-    int client_fd =
-        client->client_fd;
-
-    struct sockaddr_in client_addr =
-        client->client_addr;
-
-    free(client);
-
-    char buffer[BUFFER_SIZE];
-
-    int authenticated = 0;
-
-    char client_ip[INET_ADDRSTRLEN];
-
-    MonitorContext monitor;
-
-    memset(&monitor,
-           0,
-           sizeof(monitor));
-
-    inet_ntop(AF_INET,
-              &client_addr.sin_addr,
-              client_ip,
-              sizeof(client_ip));
-
-    printf("\nController connected from %s\n",
-           client_ip);
-
-    while (1)
-    {
-        int result =
-            recv_line(client_fd,
-                      buffer,
-                      sizeof(buffer));
-
-        if (result <= 0)
-        {
-            printf(
-                "Controller %s disconnected.\n",
-                client_ip
-            );
-
-            break;
-        }
-
-        printf("[%s] Received: %s\n",
-               client_ip,
-               buffer);
-
-        // Authentication
-        if (!authenticated)
-        {
-            if (strncmp(buffer,
-                        "AUTH ",
-                        5) == 0)
-            {
-                char *token =
-                    buffer + 5;
-
-                if (strcmp(token,
-                           AUTH_TOKEN) == 0)
-                {
-                    char response[128];
-
-                    snprintf(response,
-                             sizeof(response),
-                             "OK AUTHENTICATED SID:%s\n",
-                             SID);
-
-                    send_all(client_fd,
-                             response);
-
-                    authenticated = 1;
-
-                    printf(
-                        "[%s] Authentication successful.\n",
-                        client_ip
-                    );
-                }
-                else
-                {
-                    char response[128];
-
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 001 AUTH_FAILED SID:%s\n",
-                             SID);
-
-                    send_all(client_fd,
-                             response);
-
-                    printf(
-                        "[%s] Authentication failed.\n",
-                        client_ip
-                    );
-                }
-            }
-            else
-            {
-                char response[128];
-
-                snprintf(response,
-                         sizeof(response),
-                         "ERR 003 AUTH_REQUIRED SID:%s\n",
-                         SID);
-
-                send_all(client_fd,
-                         response);
-            }
-
-            continue;
-        }
-
-        // SYSINFO
-        if (strcmp(buffer,
-                   "SYSINFO") == 0)
-        {
-            send_sysinfo(client_fd);
-
-            printf(
-                "[%s] SYSINFO response sent.\n",
-                client_ip
-            );
-        }
-
-        // LISTPROC
-        else if (strcmp(buffer,
-                        "LISTPROC") == 0)
-        {
-            send_listproc(client_fd);
-
-            printf(
-                "[%s] LISTPROC response sent.\n",
-                client_ip
-            );
-        }
-
-        // EXEC
-        else if (strncmp(buffer,
-                         "EXEC ",
-                         5) == 0)
-        {
-            handle_exec(client_fd,
-                        buffer + 5);
-        }
-
-        // PUT
-        else if (strncmp(buffer,
-                         "PUT ",
-                         4) == 0)
-        {
-            char filename[256];
-            long long filesize;
-
-            if (sscanf(buffer,
-                       "PUT %255s %lld",
-                       filename,
-                       &filesize) == 2)
-            {
-                handle_put(client_fd,
-                           filename,
-                           filesize);
-            }
-            else
-            {
-                char response[128];
-
-                snprintf(response,
-                         sizeof(response),
-                         "ERR 012 INVALID_PUT_FORMAT SID:%s\n",
-                         SID);
-
-                send_all(client_fd,
-                         response);
-            }
-        }
-
-        // GET
-        else if (strncmp(buffer,
-                         "GET ",
-                         4) == 0)
-        {
-            char filename[256];
-
-            if (sscanf(buffer,
-                       "GET %255s",
-                       filename) == 1)
-            {
-                handle_get(client_fd,
-                           filename);
-            }
-            else
-            {
-                char response[128];
-
-                snprintf(response,
-                         sizeof(response),
-                         "ERR 013 INVALID_GET_FORMAT SID:%s\n",
-                         SID);
-
-                send_all(client_fd,
-                         response);
-            }
-        }
-
-        // MONITOR START
-        else if (strncmp(buffer,
-                         "MONITOR START ",
-                         14) == 0)
-        {
-            int udp_port;
-
-            if (sscanf(buffer,
-                       "MONITOR START %d",
-                       &udp_port) == 1 &&
-                udp_port > 0 &&
-                udp_port <= 65535)
-            {
-                char response[128];
-
-                if (start_monitoring(
-                        &monitor,
-                        client_ip,
-                        udp_port) == 0)
-                {
-                    snprintf(response,
-                             sizeof(response),
-                             "OK MONITOR_STARTED SID:%s\n",
-                             SID);
-
-                    send_all(client_fd,
-                             response);
-
-                    printf(
-                        "[%s] UDP monitoring started on port %d.\n",
-                        client_ip,
-                        udp_port
-                    );
-                }
-                else
-                {
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 014 MONITOR_ALREADY_RUNNING SID:%s\n",
-                             SID);
-
-                    send_all(client_fd,
-                             response);
-                }
-            }
-            else
-            {
-                char response[128];
-
-                snprintf(response,
-                         sizeof(response),
-                         "ERR 015 INVALID_UDP_PORT SID:%s\n",
-                         SID);
-
-                send_all(client_fd,
-                         response);
-            }
-        }
-
-        // MONITOR STOP
-        else if (strcmp(buffer,
-                        "MONITOR STOP") == 0)
-        {
-            stop_monitoring(&monitor);
-
-            char response[128];
-
-            snprintf(response,
-                     sizeof(response),
-                     "OK MONITOR_STOPPED SID:%s\n",
-                     SID);
-
-            send_all(client_fd,
-                     response);
-
-            printf(
-                "[%s] UDP monitoring stopped.\n",
-                client_ip
-            );
-        }
-
-        // QUIT
-        else if (strcmp(buffer,
-                        "QUIT") == 0)
-        {
-            stop_monitoring(&monitor);
-
-            char response[128];
-
-            snprintf(response,
-                     sizeof(response),
-                     "OK BYE SID:%s\n",
-                     SID);
-
-            send_all(client_fd,
-                     response);
-
-            printf(
-                "[%s] Controller requested QUIT.\n",
-                client_ip
-            );
-
-            break;
-        }
-
-        // Unknown command
-        else
-        {
-            char response[128];
-
-            snprintf(response,
-                     sizeof(response),
-                     "ERR 099 UNKNOWN_COMMAND SID:%s\n",
-                     SID);
-
-            send_all(client_fd,
-                     response);
-        }
-    }
-
-    stop_monitoring(&monitor);
-
-    close(client_fd);
-
-    printf(
-        "Controller connection from %s closed.\n",
-        client_ip
-    );
-
-    return NULL;
-}
-
-
 // Main Agent program
 int main()
 {
@@ -1088,9 +742,7 @@ int main()
     if (mkdir(STORAGE_DIR, 0755) < 0 &&
         errno != EEXIST)
     {
-        perror(
-            "Could not create storage directory"
-        );
+        perror("Could not create storage directory");
 
         return 1;
     }
@@ -1140,7 +792,7 @@ int main()
         return 1;
     }
 
-    if (listen(server_fd, 10) < 0)
+    if (listen(server_fd, 5) < 0)
     {
         perror("Listen failed");
 
@@ -1151,81 +803,343 @@ int main()
 
     printf("RemoteOps Agent starting...\n");
 
-    printf(
-        "Agent listening on TCP port %d...\n",
-        PORT
-    );
+    printf("Agent listening on TCP port %d...\n",
+           PORT);
 
-    printf(
-        "Storage directory: %s\n",
-        STORAGE_DIR
-    );
+    printf("Storage directory: %s\n",
+           STORAGE_DIR);
 
-    printf(
-        "UDP monitoring interval: %d seconds\n",
-        MONITOR_INTERVAL
-    );
+    printf("UDP monitoring interval: %d seconds\n",
+           MONITOR_INTERVAL);
 
-    printf(
-        "Concurrent Controller support enabled.\n"
-    );
-
-    printf(
-        "Waiting for Controller connections...\n"
-    );
+    printf("Waiting for Controller connections...\n");
 
     while (1)
     {
-        ClientContext *client =
-            malloc(sizeof(ClientContext));
+        int client_fd;
 
-        if (client == NULL)
-        {
-            perror(
-                "Failed to allocate client context"
-            );
-
-            continue;
-        }
+        struct sockaddr_in client_addr;
 
         socklen_t client_len =
-            sizeof(client->client_addr);
+            sizeof(client_addr);
 
-        client->client_fd =
+        char buffer[BUFFER_SIZE];
+
+        int authenticated = 0;
+
+        MonitorContext monitor;
+
+        memset(&monitor,
+               0,
+               sizeof(monitor));
+
+        client_fd =
             accept(server_fd,
                    (struct sockaddr *)
-                   &client->client_addr,
+                   &client_addr,
                    &client_len);
 
-        if (client->client_fd < 0)
+        if (client_fd < 0)
         {
             perror("Accept failed");
 
-            free(client);
-
             continue;
         }
 
-        pthread_t thread_id;
+        char client_ip[INET_ADDRSTRLEN];
 
-        if (pthread_create(
-                &thread_id,
-                NULL,
-                client_thread,
-                client) != 0)
+        inet_ntop(AF_INET,
+                  &client_addr.sin_addr,
+                  client_ip,
+                  sizeof(client_ip));
+
+        printf("\nController connected from %s\n",
+               client_ip);
+
+        while (1)
         {
-            perror(
-                "Failed to create client thread"
-            );
+            int result =
+                recv_line(client_fd,
+                          buffer,
+                          sizeof(buffer));
 
-            close(client->client_fd);
+            if (result <= 0)
+            {
+                printf("Controller disconnected.\n");
 
-            free(client);
+                break;
+            }
 
-            continue;
+            printf("Received: %s\n",
+                   buffer);
+
+            // Authentication
+            if (!authenticated)
+            {
+                if (strncmp(buffer,
+                            "AUTH ",
+                            5) == 0)
+                {
+                    char *token =
+                        buffer + 5;
+
+                    if (strcmp(token,
+                               AUTH_TOKEN) == 0)
+                    {
+                        char response[128];
+
+                        snprintf(response,
+                                 sizeof(response),
+                                 "OK AUTHENTICATED SID:%s\n",
+                                 SID);
+
+                        send_all(client_fd,
+                                 response);
+
+                        authenticated = 1;
+
+                        printf(
+                            "Authentication successful.\n"
+                        );
+                    }
+                    else
+                    {
+                        char response[128];
+
+                        snprintf(response,
+                                 sizeof(response),
+                                 "ERR 001 AUTH_FAILED SID:%s\n",
+                                 SID);
+
+                        send_all(client_fd,
+                                 response);
+
+                        printf(
+                            "Authentication failed.\n"
+                        );
+                    }
+                }
+                else
+                {
+                    char response[128];
+
+                    snprintf(response,
+                             sizeof(response),
+                             "ERR 003 AUTH_REQUIRED SID:%s\n",
+                             SID);
+
+                    send_all(client_fd,
+                             response);
+                }
+
+                continue;
+            }
+
+            // SYSINFO
+            if (strcmp(buffer,
+                       "SYSINFO") == 0)
+            {
+                send_sysinfo(client_fd);
+
+                printf("SYSINFO response sent.\n");
+            }
+
+            // LISTPROC
+            else if (strcmp(buffer,
+                            "LISTPROC") == 0)
+            {
+                send_listproc(client_fd);
+
+                printf("LISTPROC response sent.\n");
+            }
+
+            // EXEC
+            else if (strncmp(buffer,
+                             "EXEC ",
+                             5) == 0)
+            {
+                handle_exec(client_fd,
+                            buffer + 5);
+            }
+
+            // PUT
+            else if (strncmp(buffer,
+                             "PUT ",
+                             4) == 0)
+            {
+                char filename[256];
+
+                long long filesize;
+
+                if (sscanf(buffer,
+                           "PUT %255s %lld",
+                           filename,
+                           &filesize) == 2)
+                {
+                    handle_put(client_fd,
+                               filename,
+                               filesize);
+                }
+                else
+                {
+                    char response[128];
+
+                    snprintf(response,
+                             sizeof(response),
+                             "ERR 012 INVALID_PUT_FORMAT SID:%s\n",
+                             SID);
+
+                    send_all(client_fd,
+                             response);
+                }
+            }
+
+            // GET
+            else if (strncmp(buffer,
+                             "GET ",
+                             4) == 0)
+            {
+                char filename[256];
+
+                if (sscanf(buffer,
+                           "GET %255s",
+                           filename) == 1)
+                {
+                    handle_get(client_fd,
+                               filename);
+                }
+                else
+                {
+                    char response[128];
+
+                    snprintf(response,
+                             sizeof(response),
+                             "ERR 013 INVALID_GET_FORMAT SID:%s\n",
+                             SID);
+
+                    send_all(client_fd,
+                             response);
+                }
+            }
+
+            // MONITOR START
+            else if (strncmp(buffer,
+                             "MONITOR START ",
+                             14) == 0)
+            {
+                int udp_port;
+
+                if (sscanf(buffer,
+                           "MONITOR START %d",
+                           &udp_port) == 1 &&
+                    udp_port > 0 &&
+                    udp_port <= 65535)
+                {
+                    char response[128];
+
+                    if (start_monitoring(
+                            &monitor,
+                            client_ip,
+                            udp_port) == 0)
+                    {
+                        snprintf(response,
+                                 sizeof(response),
+                                 "OK MONITOR_STARTED SID:%s\n",
+                                 SID);
+
+                        send_all(client_fd,
+                                 response);
+
+                        printf(
+                            "UDP monitoring started on port %d.\n",
+                            udp_port
+                        );
+                    }
+                    else
+                    {
+                        snprintf(response,
+                                 sizeof(response),
+                                 "ERR 014 MONITOR_ALREADY_RUNNING SID:%s\n",
+                                 SID);
+
+                        send_all(client_fd,
+                                 response);
+                    }
+                }
+                else
+                {
+                    char response[128];
+
+                    snprintf(response,
+                             sizeof(response),
+                             "ERR 015 INVALID_UDP_PORT SID:%s\n",
+                             SID);
+
+                    send_all(client_fd,
+                             response);
+                }
+            }
+
+            // MONITOR STOP
+            else if (strcmp(buffer,
+                            "MONITOR STOP") == 0)
+            {
+                stop_monitoring(&monitor);
+
+                char response[128];
+
+                snprintf(response,
+                         sizeof(response),
+                         "OK MONITOR_STOPPED SID:%s\n",
+                         SID);
+
+                send_all(client_fd,
+                         response);
+
+                printf("UDP monitoring stopped.\n");
+            }
+
+            // QUIT
+            else if (strcmp(buffer,
+                            "QUIT") == 0)
+            {
+                stop_monitoring(&monitor);
+
+                char response[128];
+
+                snprintf(response,
+                         sizeof(response),
+                         "OK BYE SID:%s\n",
+                         SID);
+
+                send_all(client_fd,
+                         response);
+
+                printf("Controller requested QUIT.\n");
+
+                break;
+            }
+
+            // Unknown command
+            else
+            {
+                char response[128];
+
+                snprintf(response,
+                         sizeof(response),
+                         "ERR 099 UNKNOWN_COMMAND SID:%s\n",
+                         SID);
+
+                send_all(client_fd,
+                         response);
+            }
         }
 
-        pthread_detach(thread_id);
+        stop_monitoring(&monitor);
+
+        close(client_fd);
+
+        printf("Controller connection closed.\n");
     }
 
     close(server_fd);
